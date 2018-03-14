@@ -1,0 +1,4 @@
+It doesn't build or run anything yet. You can use relf.h, though.
+
+The idea is to pull the generic low-lying bits out of liballocs. I might 
+also license them more liberally than liballocs's LGPL.
