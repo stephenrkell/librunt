@@ -31,6 +31,30 @@ __assert_fail (const char *assertion, const char *file,
 extern char **environ;
 extern void abort(void) __attribute__((noreturn));
 
+#define RELF_ROUND_DOWN_(p, align) \
+	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
+	: (uintptr_t) ((align) * ((uintptr_t) (p) / (align))))
+#define RELF_ROUND_UP_(p, align) \
+	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
+	: (uintptr_t) ((align) * (1 + ((uintptr_t) (p) / (align)))))
+#define RELF_ROUND_DOWN_PTR_(p, align) \
+	((void*) (RELF_ROUND_DOWN_((p), (align))))
+#define RELF_ROUND_UP_PTR_(p, align) \
+	((void*) (RELF_ROUND_UP_((p), (align))))
+
+#ifndef ROUND_DOWN
+#define ROUND_DOWN(p, align) RELF_ROUND_DOWN_(p, align)
+#endif
+#ifndef ROUND_UP
+#define ROUND_UP(p, align) RELF_ROUND_UP_(p, align)
+#endif
+#ifndef ROUND_DOWN_PTR
+#define ROUND_DOWN_PTR(p, align) RELF_ROUND_DOWN_PTR_(p, align)
+#endif
+#ifndef ROUND_UP_PTR
+#define ROUND_UP_PTR(p, align) RELF_ROUND_UP_PTR_(p, align)
+#endif
+
 /* 
 
 ELF introspection routines.
@@ -250,6 +274,78 @@ ElfW(auxv_t) *auxv_xlookup(ElfW(auxv_t) *a, ElfW(Addr) tag)
 	return found;
 }
 
+struct auxv_limits
+{
+	ElfW(auxv_t) *auxv_array_terminator;
+	const char **env_vector_start;
+	const char **env_vector_terminator;
+	const char **argv_vector_start;
+	const char **argv_vector_terminator;
+	const char *asciiz_start;
+	const char *asciiz_end;
+	intptr_t *p_argcount;
+};
+
+static inline
+struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
+{
+#ifdef __cplusplus
+	struct auxv_limits lims = { 0, 0, 0, 0, 0, 0, 0, 0 };
+#else
+	struct auxv_limits lims = { .auxv_array_terminator = NULL };
+#endif
+	const char *highest_asciiz_seen = (const char*) auxv_array_start; // dummy initial value
+
+	lims.auxv_array_terminator = auxv_array_start;
+	while (lims.auxv_array_terminator->a_type != AT_NULL)
+	{
+		/* FIXME: check for AT_RANDOM, AT_PLATFORM and anything else that might
+		 * be pointing at data in the vague asciiz area, so we can remember the
+		 * highest address. */
+		++lims.auxv_array_terminator;
+	}
+
+	/* auxv_array_start[0] is the first word higher than envp's null terminator. */
+	lims.env_vector_terminator = ((const char**) auxv_array_start) - 1;
+	assert(!*lims.env_vector_terminator);
+	lims.env_vector_start = lims.env_vector_terminator;
+	while (*((char**) lims.env_vector_start - 1)) --lims.env_vector_start;
+
+	/* argv_vector_terminator is the next word lower than envp's first entry. */
+	lims.argv_vector_terminator = ((const char**) lims.env_vector_start) - 1;
+	assert(!*lims.argv_vector_terminator);
+	lims.argv_vector_start = lims.argv_vector_terminator;
+	unsigned nargs = 0;
+	/* To search for the start of the array, we look for an integer that is
+	 * a plausible argument count... which won't look like any pointer we're seeing. */
+	#define MAX_POSSIBLE_ARGS 4194304
+	while (*((uintptr_t*) lims.argv_vector_start - 1) > MAX_POSSIBLE_ARGS)
+	{
+		--lims.argv_vector_start;
+		++nargs;
+	}
+	assert(*((uintptr_t*) lims.argv_vector_start - 1) == nargs);
+	lims.p_argcount = (intptr_t*) lims.argv_vector_start - 1;
+
+	/* Now we have the arg vectors and env vectors, loop through them
+	 * to get the highest char pointer we see. */
+	for (const char **p = lims.argv_vector_start; p != lims.argv_vector_terminator; ++p)
+	{
+		if ((*p) > highest_asciiz_seen) highest_asciiz_seen = *p;
+	}
+	for (const char **p = lims.env_vector_start; p != lims.env_vector_terminator; ++p)
+	{
+		if ((*p) > highest_asciiz_seen) highest_asciiz_seen = *p;
+	}
+
+	/* Now for the asciiz. We lump it all in one chunk. */
+	lims.asciiz_start = (char*) (lims.auxv_array_terminator + 1);
+	lims.asciiz_end = (const char *) RELF_ROUND_UP_PTR_(highest_asciiz_seen, sizeof (intptr_t));
+	while (*(intptr_t *) lims.asciiz_end != 0) lims.asciiz_end += sizeof (intptr_t);
+
+	return lims;
+}
+
 static inline
 ElfW(Dyn) *find_dynamic(const char **environ, void *stackptr)
 {
@@ -387,7 +483,7 @@ static inline void *get_text_segment_end_from_load_addr(void *load_addr)
 	/* monster HACK; consider searching for an _etext or etext symbol first */
 	ElfW(Ehdr) *ehdr = (ElfW(Ehdr) *) load_addr;
 	ElfW(Phdr) *phdrs = (ElfW(Phdr) *)((char*) ehdr + ehdr->e_phoff);
-	return load_addr + phdrs[0].p_memsz; // another monster HACK
+	return (char *) load_addr + phdrs[0].p_memsz; // another monster HACK
 }
 
 static inline
@@ -708,16 +804,6 @@ void *get_exe_handle(void)
 	void *entry = (void*) auxv_xlookup(p_auxv, AT_ENTRY)->a_un.a_val;
 	return get_highest_loaded_object_below(entry);
 }
-#define ROUND_DOWN(p, align) \
-	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
-	: (uintptr_t) ((align) * ((uintptr_t) (p) / (align))))
-#define ROUND_UP(p, align) \
-	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
-	: (uintptr_t) ((align) * (1 + ((uintptr_t) (p) / (align)))))
-#define ROUND_DOWN_PTR(p, align) \
-	((void*) (ROUND_DOWN((p), (align))))
-#define ROUND_UP_PTR(p, align) \
-	((void*) (ROUND_UP((p), (align))))
 
 static inline
 ElfW(Sym) *symbol_lookup_linear_local(const char *sym)
@@ -729,7 +815,7 @@ ElfW(Sym) *symbol_lookup_linear_local(const char *sym)
 	const unsigned char *strtab_end = strtab + local_dynamic_xlookup(DT_STRSZ)->d_un.d_val;
 	/* Nasty hack: assume dynstr follows dynsym. */
 	/* Round down to the alignment of ElfW(Sym). */
-	ElfW(Sym) *symtab_end = (ElfW(Sym)*) ROUND_DOWN_PTR(strtab, ALIGNOF(ElfW(Sym)));
+	ElfW(Sym) *symtab_end = (ElfW(Sym)*) RELF_ROUND_DOWN_PTR_(strtab, ALIGNOF(ElfW(Sym)));
 	return symbol_lookup_linear(symtab, symtab_end, strtab, strtab_end, sym);
 }
 
@@ -738,6 +824,7 @@ ElfW(Sym) *get_dynsym(struct LINK_MAP_STRUCT_TAG *l)
 {
 	ElfW(Sym) *symtab = (ElfW(Sym) *) dynamic_xlookup(l->l_ld, DT_SYMTAB)->d_un.d_ptr;
 	if ((intptr_t) symtab < 0) return 0; // HACK: x86-64 vdso workaround
+	if (symtab && (uintptr_t) symtab < l->l_addr) return 0; // HACK: x86-64 vdso workaround
 	return symtab;
 }
 static inline
@@ -755,6 +842,7 @@ ElfW(Word) *get_sysv_hash(struct LINK_MAP_STRUCT_TAG *l)
 	ElfW(Dyn) *hash_ent = dynamic_lookup(l->l_ld, DT_HASH);
 	ElfW(Word) *hash = hash_ent ? (ElfW(Word) *) hash_ent->d_un.d_ptr : NULL;
 	if ((intptr_t) hash < 0) return 0; // HACK: x86-64 vdso workaround
+	if (hash && (uintptr_t) hash < l->l_addr) return 0; // HACK: x86-64 vdso workaround
 	return hash;
 }
 static inline
@@ -762,6 +850,7 @@ unsigned char *get_dynstr(struct LINK_MAP_STRUCT_TAG *l)
 {
 	unsigned char *strtab = (unsigned char *) dynamic_xlookup(l->l_ld, DT_STRTAB)->d_un.d_ptr;
 	if ((intptr_t) strtab < 0) return 0; // HACK: x86-64 vdso workaround
+	if (strtab && (uintptr_t) strtab < l->l_addr) return 0; // HACK: x86-64 vdso workaround
 	return strtab;
 }
 
@@ -787,7 +876,7 @@ ElfW(Sym) *symbol_lookup_in_object(struct LINK_MAP_STRUCT_TAG *l, const char *sy
 
 /* preserve NULLs */
 #define LOAD_ADDR_FIXUP_IN_OBJ(l, p) \
-	((!(p)) ? NULL : ((void*) ((char*) (p)) + (l->l_addr)))
+	((!(p)) ? NULL : ((void*) (((char*) (p)) + (l->l_addr))))
 #define LOAD_ADDR_FIXUP(p, p_into_obj) \
 	LOAD_ADDR_FIXUP_IN_OBJ( (uintptr_t) (get_link_map( (p_into_obj) )), (p) )
 
@@ -901,7 +990,7 @@ int fake_dladdr(void *addr, const char **out_fname, void **out_fbase, const char
 	void **out_saddr)
 {
 	struct LINK_MAP_STRUCT_TAG *l = get_highest_loaded_object_below(addr);
-	struct fake_dladdr_args args = { .in_sought_addr = addr };
+	struct fake_dladdr_args args = { /* in */ addr, /* out */ NULL };
 	int success = walk_symbols_in_object(l, fake_dladdr_cb, &args);
 	if (success)
 	{
