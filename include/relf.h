@@ -140,7 +140,13 @@ unsigned char *get_dynstr(struct LINK_MAP_STRUCT_TAG *l);
 
 
 #ifndef ALIGNOF
+#if defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
+#define ALIGNOF _Alignof
+#elif defined(__cplusplus) && __cplusplus >= 201103L
+#define ALIGNOF alignof
+#else
 #define ALIGNOF(t) offsetof (struct { char c; t memb; }, memb)
+#endif
 #endif
 
 /* Although we have no intention of modifying the strings in 'environ',
