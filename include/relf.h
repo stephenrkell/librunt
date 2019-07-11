@@ -143,8 +143,11 @@ unsigned char *get_dynstr(struct LINK_MAP_STRUCT_TAG *l);
 #define ALIGNOF(t) offsetof (struct { char c; t memb; }, memb)
 #endif
 
+/* Although we have no intention of modifying the strings in 'environ',
+ * declaring it 'const' causes too many headaches, because char**
+ * cannot be implicitly converted to 'const char **'. */
 static inline
-ElfW(auxv_t) *get_auxv(const char **environ, void *stackptr)
+ElfW(auxv_t) *get_auxv_via_environ(char **environ, void *stackptr)
 {
 	/* This somewhat unsound but vaguely portable mechanism for getting auxv
 	 * works as follows.
@@ -167,7 +170,7 @@ ElfW(auxv_t) *get_auxv(const char **environ, void *stackptr)
 	if (found) stack_upper_bound = (void*) found->l_addr;
 	else stack_upper_bound = (void*) -1;
 	
-	for (const char **p_str = &environ[0]; *p_str; ++p_str)
+	for (char **p_str = &environ[0]; *p_str; ++p_str)
 	{
 		if (*p_str > (const char*) stackptr && *p_str < (const char *) stack_upper_bound)
 		{
@@ -267,6 +270,33 @@ ElfW(auxv_t) *auxv_lookup(ElfW(auxv_t) *a, ElfW(Addr) tag)
 }
 
 static inline
+ElfW(auxv_t) *get_auxv(char **environ, void *stackptr)
+{
+	return get_auxv_via_environ(environ, stackptr);
+}
+
+extern void *__libc_stack_end __attribute__((weak));
+static inline
+ElfW(auxv_t) *get_auxv_via_libc_stack_end(void)
+{
+	/* __libc_stack_end, if defined, should hold the address
+	 * of argc on the initial stack. This is a GNUism. */
+	if (!&__libc_stack_end || !__libc_stack_end) return NULL;
+	uintptr_t *pos = (uintptr_t *) __libc_stack_end;
+	unsigned long nargs = *pos;
+	assert(nargs > 0);
+	++pos;
+	for (unsigned i = 0; i < nargs; ++i) ++pos;
+	assert(!*pos); // null terminator at the end of argv vector
+	while (!*pos) ++pos;
+	while (*pos) ++pos; // envp vector
+	while (!*pos) ++pos;
+	ElfW(auxv_t) *auxv = (ElfW(auxv_t) *) pos;
+	assert(auxv->a_type <= AT_MAX);
+	return auxv;
+}
+
+static inline
 ElfW(auxv_t) *auxv_xlookup(ElfW(auxv_t) *a, ElfW(Addr) tag)
 {
 	ElfW(auxv_t) *found = auxv_lookup(a, tag);
@@ -346,8 +376,50 @@ struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
 	return lims;
 }
 
+static inline int my_strcmp(const char *str1, const char *str2)
+{
+	signed diff;
+	while (1)
+	{
+		diff = *str1 - *str2;
+		if (!*str1 || !*str2 || 0 != diff) break;
+		++str1;
+		++str2;
+	}
+	if (!*str1 && *str2) return -1;
+	if (!*str2 && *str1) return 1;
+	return diff;
+}
+static inline char *my_strchr(const char *s, int c)
+{
+	while (*s && *s != c) ++s;
+	if (*s == c) return (char*) s;
+	return NULL;
+}
+static inline char *environ_getenv(const char *name, char **environ)
+{
+	const char *var;
+	while (NULL != (var = *environ++))
+	{
+		const char *equals_pos = my_strchr(var, '=');
+		if (!equals_pos || equals_pos == var) continue; // weird string
+		if (0 == my_strcmp(name, equals_pos - 1))
+		{
+			// hit!
+			return (char*)(equals_pos + 1);
+		}
+	}
+	return NULL;
+}
+
+static inline char **get_auxv_environ(ElfW(auxv_t) *auxv)
+{
+	struct auxv_limits l = get_auxv_limits(auxv);
+	return (char**) l.env_vector_start;
+}
+
 static inline
-ElfW(Dyn) *find_dynamic(const char **environ, void *stackptr)
+ElfW(Dyn) *find_dynamic(char **environ, void *stackptr)
 {
 	if (&_DYNAMIC[0]) return &_DYNAMIC[0];
 	else
@@ -494,7 +566,7 @@ get_link_map(void *ptr)
 }
 
 static inline
-void *find_ldso_base(const char **environ, void *stackptr)
+void *find_ldso_base(char **environ, void *stackptr)
 {
 	ElfW(auxv_t) *at_interp = auxv_xlookup(get_auxv(environ, stackptr), AT_BASE);
 	void *ldso_base = (void*) at_interp->a_un.a_val;
@@ -790,7 +862,7 @@ static inline
 uintptr_t guess_page_size_unsafe(void)
 {
 	int x;
-	ElfW(auxv_t) *p_auxv = get_auxv((const char **) environ, &x);
+	ElfW(auxv_t) *p_auxv = get_auxv(environ, &x);
 	if (!p_auxv) abort();
 	return auxv_xlookup(p_auxv, AT_PAGESZ)->a_un.a_val;
 }
@@ -799,7 +871,7 @@ static inline
 void *get_exe_handle(void)
 {
 	int x;
-	ElfW(auxv_t) *p_auxv = get_auxv((const char **) environ, &x);
+	ElfW(auxv_t) *p_auxv = get_auxv(environ, &x);
 	if (!p_auxv) abort();
 	void *entry = (void*) auxv_xlookup(p_auxv, AT_ENTRY)->a_un.a_val;
 	return get_highest_loaded_object_below(entry);
