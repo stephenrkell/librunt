@@ -8,291 +8,29 @@
 #include <dlfcn.h>
 #include <link.h>
 #include <assert.h>
-#include <sys/types.h>
-/* We make very heavy use of malloc_usable_size in heap_index. But we also 
- * override it -- twice! -- once in mallochooks, to intercept the early_malloc
- * case, and once here to intercept the stack (alloca) case. 
- * 
- * We want to be very careful with the visibility of this symbol, so that references
- * we make always go straight to our definition, not via the PLT. So declare it
- * as protected. NOTE that it will always make at least one call through the PLT, 
- * because the underlying logic is in libc. FIXME: all this is messed up and doesn't
- * seem to work. What we want is to avoid two PLT indirections (one is unavoidable). */
-size_t malloc_usable_size(void *ptr) /*__attribute__((visibility("protected")))*/;
-size_t __real_malloc_usable_size(void *ptr) /*__attribute__((visibility("protected")))*/;
-size_t __wrap_malloc_usable_size(void *ptr) __attribute__((visibility("protected")));
-size_t __mallochooks_malloc_usable_size(void *ptr) __attribute__((visibility("protected")));
-#include <sys/mman.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <sys/syscall.h>
 #include <stdint.h>
 #include <string.h>
-#include <stdarg.h>
 #include <errno.h>
-#include <sys/time.h>
-#include <sys/resource.h>
-#include "liballocs_private.h"
+#include "librunt_private.h"
 #include "relf.h"
-#include "raw-syscalls.h"
-#include "allocmeta.h"
-
-/* On some glibcs,
- * including signal.h breaks asm includes, so just supply the decls here. */
-#ifdef AVOID_LIBC_SIGNAL_H_
-typedef void (*sighandler_t)(int);
-sighandler_t signal(int signum, sighandler_t handler);
-struct __libc_sigaction;
-int sigaction(int signum, const struct __libc_sigaction *act,
-             struct __libc_sigaction *oldact);
-#else
-#define __libc_sigaction sigaction
-#endif
-
-/* We should be safe to use it once malloc is initialized. */
-// #define safe_to_use_bigalloc (__liballocs_is_initialized)
-#define safe_to_use_bigalloc (pageindex)
-#define safe_to_call_dlsym (safe_to_call_malloc)
-
-/* some signalling to malloc hooks */
-_Bool __avoid_libdl_calls;
+#include "dso-meta.h"
 
 /* NOTE that our wrappers are all init-on-use. This is because 
  * we might get called very early, and even if we're not trying to
  * intercept the early calls, we still need to be able to delegate. 
  * For that, we need our underyling function pointers. */
 
-/* NOTE / HACK / glibc-specificity: we know about two different mmap entry 
- * points: mmap and mmap64. 
- * 
- * on x86-64, mmap64 has 8-byte size_t length and 8-byte off_t offset.
- * on x86-64, mmap has 8-byte size_t length and 8-byte off_t offset.
- * So I think the differences are only on 32-bit platforms. 
- * For now, just alias mmap64 to mmap. */
+#ifndef MAX_EARLY_LIBS
+#define MAX_EARLY_LIBS 16
+#endif
 
-/* Stop gcc from tail-call-opt'ing the __mallochooks_ call, because 
- * it has made it impossible to debug linkage problems. */
-#pragma GCC push_options
-#pragma GCC optimize("no-optimize-sibling-calls")
-
-extern void *__curbrk;
-size_t __wrap_malloc_usable_size (void *ptr) __attribute__((visibility("protected")));
-size_t malloc_usable_size (void *ptr) __attribute__((alias("__wrap_malloc_usable_size"),visibility("default")));
-size_t __wrap_malloc_usable_size (void *ptr)
-{
-	/* We use this all the time in heap_index. 
-	 * BUT because heap_index addresses can be on the stack too, 
-	 * in the case of alloca, we need to intercept this case
-	 * and handle it appropriately. 
-	 * 
-	 * How can we detect the stack case quickly?
-	 * We could just ask the pageindex.
-	 * 
-	 * If we wanted a faster-but-less-general common case, 
-	 * - If ptr is on the same page as our thread's rsp, 
-	 *   it's definitely a stack pointer.
-	 * - If ptr is within MAXIMUM_STACK_SIZE of our thread's rsp, 
-	 *   it's *probably* a stack ptr, but to be certain it seems
-	 *   that we still have to consult the l0 index.
-	 * - Can we *rule out* the stack case quickly?
-	 *   HMM... all this is only using the same tricks we have in 
-	 *   get_object_memory_kind, so use that.
-	 * 
-	 */
-	void *sp;
-	 #ifdef UNW_TARGET_X86
-		__asm__ ("movl %%esp, %0\n" :"=r"(sp));
-	#else // assume X86_64 for now
-		__asm__("movq %%rsp, %0\n" : "=r"(sp));
-	#endif
-
-	/* The only time a stack address (any suballocator) can be valid for us
-	 * is if the arg is the base of an alloca. If so, we stored the size
-	 * one word below the base. */
-	// FIXME: none of this should be necessary. Use a separate memtable for alloca?
-	// NOTE: this isn't as unsound as it looks, since our mmap nudger won't ever place
-	// a new mapping here
-#define INITIAL_STACK_MINIMUM_SIZE 81920
-	_Bool is_definitely_not_stack = (char*) ptr <= (char*) __curbrk
-			|| 
-			big_allocations[pageindex[(uintptr_t) ptr >> LOG_PAGE_SIZE]].allocated_by
-				== &__mmap_allocator
-			||
-			big_allocations[pageindex[(uintptr_t) ptr >> LOG_PAGE_SIZE]].allocated_by
-				== &__generic_malloc_allocator
-			;
-	_Bool is_definitely_stack = 
-		(   // anywhere on the initial stack
-			/* Austin-style unsigned wrap-around hack... */
-			((uintptr_t) __top_of_initial_stack - (uintptr_t) ptr)
-			< (__stack_lim_cur == RLIM_INFINITY ? INITIAL_STACK_MINIMUM_SIZE : __stack_lim_cur)
-		)
-		|| // same page on the current stack
-		(
-			(((uintptr_t) ptr & ~(PAGE_SIZE - 1))
-			    == ((uintptr_t) sp & ~(PAGE_SIZE - 1)))
-		);
-	
-	if (is_definitely_stack)
-	{
-		return *(((unsigned long *) ptr) - 1);
-	}
-	if (is_definitely_not_stack)
-	{
-		return //__real_malloc_usable_size(ptr);
-			__mallochooks_malloc_usable_size(ptr);
-	}
-	return (__liballocs_get_allocator_upper_bound(ptr) == &__stack_allocator)
-		? *(((unsigned long *) ptr) - 1)
-		: __mallochooks_malloc_usable_size(ptr);
-}
-#pragma GCC pop_options
-
-extern int _etext;
-static 
-_Bool
-is_self_call(const void *caller)
-{
-	static char *our_load_addr;
-	if (!our_load_addr) our_load_addr = (char*) get_highest_loaded_object_below(is_self_call)->l_addr;
-	if (!our_load_addr) abort(); /* we're supposed to be preloaded, not executable */
-	static char *text_segment_end;
-	if (!text_segment_end) text_segment_end = get_local_text_segment_end();
-	return ((char*) caller >= our_load_addr && (char*) caller < text_segment_end);
-}
-
-/* Libraries that extend us can define this to control mmap placement policy. */
-void __liballocs_nudge_mmap(void **p_addr, size_t *p_length, int *p_prot, int *p_flags,
-                  int *p_fd, off_t *p_offset, const void *caller) __attribute__((weak));
-
-/* For most of the process we rely on symbol overriding to observe mmap calls. 
- * However, we have another trick for ld.so and libc mmap syscalls.
- * We *never* delegate to the underlying (RTLD_NEXT) mmap; we always do it
- * ourselves. This ensures that the handling is an either-or; exactly one of these
- * paths (preload or systrap) should be hit. We must take care to do the
- * (logically) same things in both. */
-void *mmap(void *addr, size_t length, int prot, int flags,
-                  int fd, off_t offset)
-{
-	/* We always nudge, even for mmaps we do ourselves. This is because 
-	 * the nudge function implements some global placement policy that even
-	 * our memtables must adhere to. */
-	if (&__liballocs_nudge_mmap)
-	{
-		__liballocs_nudge_mmap(&addr, &length, &prot, &flags, &fd, &offset, __builtin_return_address(0));
-	}
-
-	void *ret = raw_mmap(addr, length, prot, flags, fd, offset);
-	if (MMAP_RETURN_IS_ERROR(ret))
-	{
-		errno = -(int) (size_t) ret;
-		ret = MAP_FAILED;
-	}
-
-	/* We only start hooking mmap after we read /proc, which is also when we 
-	 * enable the systrap stuff. */
-	if (!__liballocs_systrap_is_initialized || length > BIGGEST_BIGALLOC
-		//|| 
-		//	(is_self_call(__builtin_return_address(0))
-		//	&& )
-		// ... actually, observing our own mmaps might be... okay? CARE, because
-		// the mmap allocator does call malloc itself, for its metadata, so we might
-		// become reentrant at this point, which we *don't* want. Note that we're
-		// not in a signal handler here; this path is only for LD_PRELOAD-based hooking,
-		// and we don't trap our own mmap syscalls, so things are slightly less hairy than
-		// they otherwise might be.
-		// Current approach: mmap allocator tests for private malloc active, and 
-		// just does a more minimalist metadata-free bigalloc creation in such cases.
-		// FIXME: whatever we decide to do here, also do it for mremap and munmap
-	)
-	{
-		// skip hooking logic
-		return ret;
-	}
-	
-	if (!MMAP_RETURN_IS_ERROR(ret))
-	{
-		__mmap_allocator_notify_mmap(ret, addr, length, prot, flags, fd, offset, __builtin_return_address(0));
-	}
-	else
-	{
-		errno = -(intptr_t)ret;
-		ret = (void*) -1;
-	}
-	return ret;
-}
-void *mmap64(void *addr, size_t length, int prot, int flags,
-                  int fd, off_t offset) __attribute__((alias("mmap")));
-
-int munmap(void *addr, size_t length)
-{
-	static int (*orig_munmap)(void *, size_t);
-	if (!orig_munmap)
-	{
-		orig_munmap = dlsym(RTLD_NEXT, "munmap");
-		assert(orig_munmap);
-	}
-	
-	if (!safe_to_use_bigalloc || is_self_call(__builtin_return_address(0)))
-	{
-		return orig_munmap(addr, length);
-	}
-	else
-	{
-		int ret = orig_munmap(addr, length);
-		if (ret == 0)
-		{
-			__mmap_allocator_notify_munmap(addr, length, __builtin_return_address(0));
-		}
-		return ret;
-	}
-}
-
-void *mremap(void *old_addr, size_t old_size, size_t new_size, int flags, ... /* void *new_address */)
-{
-	static void *(*orig_mremap)(void *, size_t, size_t, int, ...);
-	va_list ap;
-	if (!orig_mremap)
-	{
-		orig_mremap = dlsym(RTLD_NEXT, "mremap");
-		assert(orig_mremap);
-	}
-	
-	void *new_address = MAP_FAILED;
-	if (flags & MREMAP_FIXED)
-	{
-		va_start(ap, flags);
-		new_address = va_arg(ap, void *);
-		va_end(ap);
-	}
-	
-#define DO_ORIG_CALL ((flags & MREMAP_FIXED)  \
-			? orig_mremap(old_addr, old_size, new_size, flags, new_address) \
-			: orig_mremap(old_addr, old_size, new_size, flags))
-	
-	if (!safe_to_use_bigalloc || is_self_call(__builtin_return_address(0))) 
-	{
-		return DO_ORIG_CALL;
-	}
-	else
-	{
-		void *ret = DO_ORIG_CALL;
-		if (ret != MAP_FAILED)
-		{
-			__mmap_allocator_notify_mremap_after(ret, old_addr, old_size, 
-					new_size, flags, new_address, __builtin_return_address(0));
-		}
-		return ret;
-	}
-#undef orig_call
-}
-
-// HACK: call out to libcrunch if it's linked in
-extern void  __attribute__((weak)) __libcrunch_scan_lazy_typenames(void*);
+/* some signalling to clients */
+_Bool __avoid_libdl_calls;
 
 struct link_map *early_lib_handles[MAX_EARLY_LIBS] __attribute((visibility("hidden")));
-
 static char *our_dlerror;
 static char *call_orig_dlerror(void);
 
@@ -354,7 +92,7 @@ void *dlopen(const char *filename, int flag)
 			}
 			else goto skip_load;
 		}
-		const char *file_realname = __liballocs_private_strdup(file_realname_raw);
+		const char *file_realname = __private_strdup(file_realname_raw);
 		for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
 		{
 			const char *lm_ent_realname = dynobj_name_from_dlpi_name(l->l_name, (void*) l->l_addr);
@@ -386,8 +124,7 @@ skip_load:
 	 * we haven't. Otherwise we rely on the racy logic above. */
 	if (filename != NULL && ret != NULL && !(flag & RTLD_NOLOAD) && !file_already_loaded)
 	{
-		if (__libcrunch_scan_lazy_typenames) __libcrunch_scan_lazy_typenames(ret);
-		__static_file_allocator_notify_load(ret, __builtin_return_address(0));
+		__runt_files_notify_load(ret, __builtin_return_address(0));
 	}
 
 	return ret;
@@ -395,10 +132,6 @@ skip_load:
 
 int dlclose(void *handle)
 {
-	/* FIXME: liballocs can keep allocations refering to static space of
-	 * libraries. Thus unloading is broken for the moment. */
-	return 0;
-
 	/* FIXME: libcrunch needs a way to purge its cache on dynamic unloading,
 	 * since it may contain "static" allocations. */
 
@@ -412,7 +145,7 @@ int dlclose(void *handle)
 		orig_dlopen = dlsym(RTLD_NEXT, "dlopen");
 		assert(orig_dlclose);
 	}
-	
+#if 0
 	if (!safe_to_use_bigalloc)
 	{
 		if (we_set_flag) __avoid_libdl_calls = 0;
@@ -420,6 +153,7 @@ int dlclose(void *handle)
 	}
 	else
 	{
+#endif
 		char *copied_filename = strdup(((struct link_map *) handle)->l_name);
 		assert(copied_filename != NULL);
 		
@@ -435,7 +169,7 @@ int dlclose(void *handle)
 			if (h == NULL)
 			{
 				// yes, it was unloaded
-				__static_file_allocator_notify_unload(copied_filename);
+				__runt_files_notify_unload(copied_filename);
 			}
 			else 
 			{
@@ -447,7 +181,9 @@ int dlclose(void *handle)
 		free(copied_filename);
 		if (we_set_flag) __avoid_libdl_calls = 0;
 		return ret;
+#if 0
 	}
+#endif
 }
 
 static char *(*orig_dlerror)(void);
@@ -626,107 +362,4 @@ static void init(void)
 	 * is okay, it seems. */
 	// write_string("Hello from preload init!\n");
 	
-}
-
-void abort(void) __attribute__((visibility("protected")));
-void abort(void)
-{
-	/* Give ourselves time to attach a debugger. */
-	write_string("Aborting program ");
-	raw_write(2, get_exe_basename(), strlen(get_exe_basename()));
-	write_string(", pid ");
-	int pid = raw_getpid();
-	char a;
-	a = '0' + ((pid / 10000) % 10); raw_write(2, &a, 1);
-	a = '0' + ((pid / 1000) % 10); raw_write(2, &a, 1);
-	a = '0' + ((pid / 100) % 10); raw_write(2, &a, 1);
-	a = '0' + ((pid / 10) % 10); raw_write(2, &a, 1);
-	a = '0' + (pid % 10); raw_write(2, &a, 1);
-	write_string(", from address ");
-	write_ulong((unsigned long) __builtin_return_address(0));
-	write_string(", in 10 seconds\n");
-
-	sleep(10);
-	raw_kill(pid, 6);
-	__builtin_unreachable();
-}
-
-sighandler_t signal(int signum, sighandler_t handler)
-{
-	static sighandler_t (*orig_signal)(int, sighandler_t);
-	
-	sighandler_t ret;
-	_Bool we_set_flag = 0;
-	if (!__avoid_libdl_calls) { we_set_flag = 1; __avoid_libdl_calls = 1; }
-	if (!orig_signal)
-	{
-		if (__avoid_libdl_calls && !we_set_flag) abort();
-		orig_signal = dlsym(RTLD_NEXT, "signal");
-		if (!orig_signal) abort();
-	}
-
-	if (signum == SIGILL)
-	{
-		debug_printf(0, "Ignoring program's request to install a SIGILL handler.\n");
-		errno = ENOTSUP;
-		ret = SIG_ERR;
-	} else ret = orig_signal(signum, handler);
-out:
-	if (we_set_flag) __avoid_libdl_calls = 0;
-	return ret;
-}
-
-int sigaction(int signum, const struct __libc_sigaction *act,
-                     struct __libc_sigaction *oldact)
-{
-	static int (*orig_sigaction)(int, const struct __libc_sigaction *, struct __libc_sigaction *);
-	
-	int ret;
-	_Bool we_set_flag = 0;
-	if (!__avoid_libdl_calls) { we_set_flag = 1; __avoid_libdl_calls = 1; }
-	if (!orig_sigaction)
-	{
-		if (__avoid_libdl_calls && !we_set_flag) abort();
-		orig_sigaction = dlsym(RTLD_NEXT, "sigaction");
-		if (!orig_sigaction) abort();
-	}
-	
-	if (signum == SIGILL && act != NULL)
-	{
-		debug_printf(0, "Ignoring program's request to install a SIGILL handler.\n");
-		ret = orig_sigaction(SIGILL, NULL, oldact);
-	} else ret = orig_sigaction(signum, act, oldact);
-out:
-	if (we_set_flag) __avoid_libdl_calls = 0;
-	return ret;
-}
-
-void *memcpy(void *dest, const void *src, size_t n)
-{
-	static void *(*orig_memcpy)(void *, const void *, size_t);
-	if (!orig_memcpy)
-	{
-		/* Use fake_dlsym because it understands ifuncs. */
-		orig_memcpy = fake_dlsym(RTLD_NEXT, "memcpy");
-		assert(orig_memcpy);
-	}
-	
-	__notify_copy(dest, src, n);
-
-	return orig_memcpy(dest, src, n);
-}
-
-void *(*orig_memmove)(void *, const void *, size_t);
-void *memmove(void *dest, const void *src, size_t n)
-{
-	if (!orig_memmove)
-	{
-		/* Use fake_dlsym because it understands ifuncs. */
-		orig_memmove = fake_dlsym(RTLD_NEXT, "memmove");
-		assert(orig_memmove);
-	}
-	
-	__notify_copy(dest, src, n);
-
-	return orig_memmove(dest, src, n);
 }

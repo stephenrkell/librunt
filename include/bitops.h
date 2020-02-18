@@ -1,5 +1,5 @@
-#ifndef LIBALLOCS_BITOPS_H_
-#define LIBALLOCS_BITOPS_H_
+#ifndef LIBRUNT_BITOPS_H_
+#define LIBRUNT_BITOPS_H_
 
 #ifdef __cplusplus
 #include <cstdint>

@@ -1,5 +1,5 @@
-#ifndef LIBALLOCS_MAPS_H_
-#define LIBALLOCS_MAPS_H_
+#ifndef LIBRUNT_MAPS_H_
+#define LIBRUNT_MAPS_H_
 
 #include <string.h>
 #include <unistd.h>

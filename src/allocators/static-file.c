@@ -13,12 +13,12 @@
 #include <dlfcn.h>
 #include <limits.h>
 #include <link.h>
+#include <sys/mman.h>
 #include "relf.h"
-#include "liballocs_private.h"
-#include "pageindex.h"
-#include "allocsites.h"
+#include "dso-meta.h"
+#include "vas.h"
+#include "librunt_private.h"
 int fstat(int fd, struct stat *buf);
-int raw_open(const char *pathname, int flags); // avoid raw-syscalls.h
 
 /* This file's logic really belongs in the dynamic linker.
  * It is responding to load and unload events.
@@ -27,28 +27,81 @@ int raw_open(const char *pathname, int flags); // avoid raw-syscalls.h
  * by name.
  * We also want phdr, ehdr and shdr access. */
 
-/* We now split static metadata into static-file, static-segment,
-   static-section and static-symbol. This file implements only static-file,
-   but here is an overview of how the whole thing works.
-
-   The basic idea is to use vectors, bitmaps and cumulative offset counts
-   to provide fast, dense lookups into all this statically packed metadata.
-   The vector (metavector) is address-sorted, and has one entry per leaf-level
-   static alloc (symbol, DWARF-defined object or reloc target). For compactness,
-   this does not actually store the address; it simply stores an index into 
-   whatever table (symtab, dynsym, extrasym, .rela?.*) already describes it.
-   
-   All this is precomputed and stored in the meta-DSO. It could be computed
-   on demand, but that is slow.
-
-   It is segments' being pre-packed that allows us to precompute their
-   allocated object metadata and represent it as packed arrays.
-   If we ever get around to supporting dynamic re-layouting of segments,
-   the flip side will be expensive recomputation of all this precomputed stuff.
- */
-
 static _Bool trying_to_initialize;
 static _Bool initialized;
+
+// we define this a bit closer to the allocating code, but declare it now
+static void free_file_metadata(void *fm);
+
+struct lm_pair
+{
+	struct link_map *lm;
+	struct file_metadata *fm;
+};
+/* NOTE: in liballocs, this lm_pairs structure should never be used,
+ * as it is . */
+static struct lm_pair (__attribute__((aligned(COMMON_PAGE_SIZE))) lm_pairs)[COMMON_PAGE_SIZE / sizeof (struct lm_pair)];
+static unsigned npairs;
+static 
+#ifndef NO_PTHREADS
+#include <pthread.h>
+#define BIG_LOCK \
+        int lock_ret = pthread_mutex_lock(&mutex); \
+        assert(lock_ret == 0);
+#define BIG_UNLOCK \
+        lock_ret = pthread_mutex_unlock(&mutex); \
+        assert(lock_ret == 0);
+static pthread_mutex_t mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+#else
+#define BIG_LOCK
+#define BIG_UNLOCK
+#endif
+static int compare_lm_pair_by_load_addr(const void *v1, const void *v2)
+{
+	/* Trick: zeroes always compare *higher*. This is so that if we
+	 * null out an entry and re-sort, we compact to the beginning. */
+	const struct lm_pair *p1 = v1;
+	const struct lm_pair *p2 = v2;
+	if (p1 == p2) return 0;
+	if (!p1->lm) /* p1 compares higher */ return 1;
+	if (!p2->lm) /* p2 compares higher */ return 1;
+	return p2->lm->l_addr - p1->lm->l_addr;
+}
+static void insert_pair(struct link_map *lm, struct file_metadata *fm)
+{
+	BIG_LOCK
+	lm_pairs[npairs++] = (struct lm_pair) { .lm = lm, .fm = fm };
+	qsort(lm_pairs, npairs, sizeof lm_pairs[0], compare_lm_pair_by_load_addr);
+	BIG_UNLOCK
+}
+static void delete_pair(struct lm_pair **p)
+{
+	free_file_metadata((*p)->fm);
+	BIG_LOCK
+	*p = NULL;
+	qsort(lm_pairs, npairs, sizeof lm_pairs[0], compare_lm_pair_by_load_addr);
+	--npairs;
+	BIG_UNLOCK
+}
+
+struct lm_pair *lookup_by_addr(void *addr)
+{
+#define proj_npair_load_addr(p) (p)->lm->l_addr
+	return bsearch_leq_generic(struct lm_pair, (uintptr_t) addr,
+		&lm_pairs[0], npairs, proj_npair_load_addr);
+#undef proj_npair_load_addr
+}
+struct link_map *__runt_files_lookup_by_addr(void *addr)
+{
+	struct lm_pair *p = lookup_by_addr(addr);
+	return p ? p->lm : NULL;
+}
+
+static struct file_metadata *metadata_for_addr(void *addr)
+{
+	struct lm_pair *p = lookup_by_addr(addr);
+	return p ? p->fm : NULL;
+}
 
 static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *info, size_t size, void *file_metadata);
 struct segments
@@ -59,17 +112,19 @@ struct segments
 };
 static int discover_segments_cb(struct dl_phdr_info *info, size_t size, void *segments_as_void);
 
-void __static_file_allocator_notify_load(void *handle, const void *load_site);
+void __runt_files_notify_load(void *handle, const void *load_site);
 
-void __static_file_allocator_init(void) __attribute__((constructor(102)));
-void __static_file_allocator_init(void)
+void __runt_files_init(void) __attribute__((constructor(102)));
+void __runt_files_init(void)
 {
 	if (!initialized && !trying_to_initialize)
 	{
 		trying_to_initialize = 1;
+#if 0
 		/* Initialize what we depend on. */
 		__mmap_allocator_init();
-		__auxv_allocator_init();
+#endif
+		__runt_auxv_init();
 		/* FIXME: arguably, for dynamically linked programs, the allocation
 		 * site of these is somewhere inside the dynamic linker. E.g.
 		 * if the linker was run by the kernel's loader (and not by directly
@@ -77,7 +132,16 @@ void __static_file_allocator_init(void)
 		 * /path/to/ld.so /path/to/executable) it should be _dl_start, else
 		 * it should be wherever in the dynamic linker did the load. We can
 		 * distinguish all these cases, and should do.... */
-		const void *program_entry_point = __auxv_get_program_entry_point();
+#if 1
+		const void *program_entry_point = __runt_auxv_get_program_entry_point();
+#else
+		char dummy;
+		ElfW(auxv_t) *auxv = get_auxv(environ, &dummy);
+		assert(auxv);
+		ElfW(auxv_t) *entry_auxv = auxv_lookup(auxv, AT_ENTRY);
+		const void *program_entry_point = (const void *) entry_auxv->a_un.a_val;
+#endif
+
 		/* We probably don't need to iterate over all DSOs -- those that have been
 		 * dlopened by us since execution started (e.g. the dlbind lib)
 		 * were already notified/added earlier. So we only iterate
@@ -88,7 +152,7 @@ void __static_file_allocator_init(void)
 			for (unsigned i = 0; i < MAX_EARLY_LIBS; ++i)
 			{
 				if (!early_lib_handles[i]) break;
-				__static_file_allocator_notify_load(early_lib_handles[i],
+				__runt_files_notify_load(early_lib_handles[i],
 					program_entry_point);
 			}
 		}
@@ -96,25 +160,33 @@ void __static_file_allocator_init(void)
 		{
 			for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
 			{
-				__static_file_allocator_notify_load(l, program_entry_point);
+				__runt_files_notify_load(l, program_entry_point);
 			}
 		}
 		/* For all loaded objects... */
-		if (__liballocs_debug_level >= 10)
+		if (__librunt_debug_level >= 10)
 		{
 			for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
 			{
 				/* l_addr isn't guaranteed to be mapped, so use _DYNAMIC a.k.a. l_ld'*/
 				void *query_addr = l->l_ld;
+#if 0
 				struct big_allocation *containing_mapping =__lookup_bigalloc_top_level(query_addr);
 				struct big_allocation *containing_file = __lookup_bigalloc_under(
 					query_addr, &__static_file_allocator, containing_mapping, NULL);
 				assert(containing_file);
-				struct file_metadata *file = containing_file->meta.un.opaque_data.data_ptr;	
+#endif
+				struct file_metadata *file = 
+#if 0
+						containing_file->meta.un.opaque_data.data_ptr;	
+#else
+					metadata_for_addr((void*) l->l_addr);
+#endif
 				for (unsigned i_seg = 0; i_seg < file->nload; ++i_seg)
 				{
 					union sym_or_reloc_rec *metavector = file->segments[i_seg].metavector;
 					size_t metavector_size = file->segments[i_seg].metavector_size;
+#if 0
 					// we print the whole metavector
 					for (unsigned i = 0; i < metavector_size / sizeof *metavector; ++i)
 					{
@@ -128,6 +200,7 @@ void __static_file_allocator_init(void)
 							)
 						);
 					}
+#endif
 				}
 			}
 		}
@@ -135,9 +208,6 @@ void __static_file_allocator_init(void)
 		trying_to_initialize = 0;
 	}
 }
-
-// we define this a bit closer to the allocating code, but declare it now
-static void free_file_metadata(void *fm);
 
 static void *get_or_map_file_range(struct file_metadata *file,
 	size_t length, int fd, off_t offset)
@@ -149,7 +219,7 @@ static void *get_or_map_file_range(struct file_metadata *file,
 		ElfW(Phdr) *phdr = &file->phdrs[i];
 		if (phdr->p_type == PT_LOAD)
 		{
-			if (phdr->p_offset <= offset &&
+			if (phdr->p_offset <= (ElfW(Off)) offset &&
 					phdr->p_offset + phdr->p_filesz >= offset + length)
 			{
 				// we can just return the address within that phdr
@@ -177,9 +247,9 @@ static void *get_or_map_file_range(struct file_metadata *file,
 	/* OK. We need to create a new extra mapping, unless there's no room... */
 	if (midx == MAPPING_MAX) return NULL;
 	// tweak our offset/length
-	off_t rounded_offset = ROUND_DOWN(offset, PAGE_SIZE);
+	off_t rounded_offset = ROUND_DOWN(offset, MIN_PAGE_SIZE);
 	length += offset - rounded_offset;
-	length = ROUND_UP(length, PAGE_SIZE);
+	length = ROUND_UP(length, MIN_PAGE_SIZE);
 	// FIXME: racy
 	void *ret = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, rounded_offset);
 	if (!MMAP_RETURN_IS_ERROR(ret))
@@ -193,54 +263,6 @@ static void *get_or_map_file_range(struct file_metadata *file,
 	}
 	return NULL;
 }
-
-// GAH: with the move to entries, we need a side table to get
-// the address represented by any given entry.
-// PERHAPS the right thing is to sort in groups,
-// then do a merge?
-// PERHAPS the right thing is to avoid extrasyms?
-// ALSO the uniqtype pointers won't be statically representable.
-// REMEMBER that we want to statically generate 
-// - extrasyms
-// - types for included-in-{dynsym,symtab} syms, since extrasyms should not duplicate them
-// - i.e. most/all this processing should be done statically
-// - what should our output look like?
-/*
-	Statically, we should compute the sorted vector.
-	And the types vector.
-	And the extrasyms vector.
-	At run time, we can point to these directly.
-	Ideal feature: for extrasyms, the user can ask to generate extrasyms
-	   for symtab, if they know that is going to be stripped. This
-	   affects the contents of the sorted vector.
-	We implement this by sorting each kind separately,
-	   then doing a 4-way merge which we hand-code.
-	BUT perhaps don't bother storing the sorted vector in the meta obj?
-	We can reconstruct it at run time.
-	But why should we?
-	It is just a bunch of discriminants and offsets.
-	At run time, we simply build the bitmap.
-	Actually, why do that at runtime? We can also build that statically. We output
-	- extrasyms
-	- extrarelocs (for syscall trap site caching... HMM)
-	- sorted_vec (16-bit entries: 14 bits for idx in symtab/dynsym/extrasym)
-	- types_vec
-	- starts_bitmap
-	- cumulative_vec_offsets
-	Do syscalls really belong in extrarelocs?
-	If we have an mmap'ing binary with no metadata attached,
-	   we still want to be able to trap its syscalls.
-	   But that is still supported via the libsystrap API; it's just our use of that API
-	      that we're varying.
-	Each word is commented in the .c output with the (up to 64) entities whose starts it records.
-	Is 16K entries enough? Can use 16-bit vec entries if so (2 bits reserved)
-	I think this should be enough because
-	(1) only defined symbols are of interest,
-	(2) only relocs pointing to addresses not spanned by symbols are of interest, and
-	(3) elements should not be counted twice,
-	(i.e. elements in dynsym should be skipped when processing symtab).
- */
-// PERHAPS we should have a parallel vector for the uniqtypes
 
 struct dso_vaddr_bounds
 {
@@ -279,7 +301,7 @@ static struct dso_vaddr_bounds get_dso_vaddr_bounds(void *handle)
 	return bounds;
 }
 
-void __static_file_allocator_notify_load(void *handle, const void *load_site)
+void __runt_files_notify_load(void *handle, const void *load_site)
 {
 	struct link_map *l = (struct link_map *) handle;
 	const char *tmp = dynobj_name_from_dlpi_name(l->l_name,
@@ -289,12 +311,14 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 	 * dynobj_name_from_dlpi_namethat... do the strdup here, but we will push
 	 * this pointer into the file_metadata struct later, whose deallocator will
 	 * free it. */
-	const char *dynobj_name = __liballocs_private_strdup(tmp);
+	const char *dynobj_name = __private_strdup(tmp);
 	debug_printf(1, "notified of load of object %s\n", dynobj_name);
+#if 0
 	/* Load the separate meta-object for this object. */
 	void *meta_obj_handle = NULL;
 	int ret_meta = dl_for_one_object_phdrs(handle,
 		load_and_init_all_metadata_for_one_object, &meta_obj_handle);
+#endif
 	// meta_obj_handle may be null -- we continue either way
 	/* Look up the mapping sequence for this file. Note that
 	 * although a file is notionally sparse, modern glibc's ld.so
@@ -310,6 +334,7 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 	struct dso_vaddr_bounds bounds = get_dso_vaddr_bounds(handle);
 	assert(bounds.lowest_mapped_vaddr != (uintptr_t) -1);
 	struct big_allocation *lowest_containing_mapping_bigalloc = NULL;
+#if 0
 	struct mapping_entry *m = __liballocs_get_memory_mapping(
 		(void*) (l->l_addr + bounds.lowest_mapped_vaddr),
 		&lowest_containing_mapping_bigalloc);
@@ -326,6 +351,7 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 	struct big_allocation *containing_mapping_bigalloc = lowest_containing_mapping_bigalloc;
 	size_t file_bigalloc_size = (uintptr_t)((char*) l->l_addr + bounds.limit_vaddr)
 		- (uintptr_t) lowest_containing_mapping_bigalloc->begin;
+#endif
 	struct segments sinfo = (struct segments) { .nload = 0 };
 	dl_for_one_object_phdrs(l, discover_segments_cb, &sinfo);
 	assert(sinfo.nload != 0);
@@ -337,12 +363,16 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 	meta->load_site = load_site;
 	meta->filename = dynobj_name;
 	meta->l = l;
+#if 0
 	meta->meta_obj_handle = meta_obj_handle;
 	meta->extrasym = (meta_obj_handle ? dlsym(meta_obj_handle, "extrasym") : NULL);
-	meta->phdrs = sinfo.phdrs;
+#endif
+	meta->phdrs = (ElfW(Phdr) *) sinfo.phdrs;
 	meta->phnum = sinfo.phnum;
 	meta->nload = sinfo.nload;
 	/* We still haven't filled in everything... */
+	insert_pair(l, meta);
+#if 0
 	/* We want to create a single "big allocation" for the whole file. 
 	 * However, that's a problem ta least in the case of executables
 	 * mapped by the kernel: there isn't a single mapping sequence. We
@@ -374,6 +404,7 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 		assert(!executable_file_bigalloc);
 		executable_file_bigalloc = b;
 	}
+#endif
 	/* The only semi-portable way to get phdrs is to iterate over
 	 * *all* the phdrs. But we only want to process a single file's
 	 * phdrs now. Our callback must do the test. */
@@ -389,7 +420,10 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 	 * parts of the file. */
 	/* FIXME: we'd much rather not do open() on l->l_name (race condition) --
 	 * if we had the original fd that was exec'd, that would be great. */
+#if 0
 	int fd = raw_open(meta->filename, O_RDONLY);
+#endif
+	int fd = open(meta->filename, O_RDONLY);
 	if (fd < 0)
 	{
 		// warn, at a debug level that depends on whether the path looks sane
@@ -397,7 +431,7 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 	}
 	else // fd >= 0
 	{
-		meta->ehdr = get_or_map_file_range(meta, PAGE_SIZE, fd, 0);
+		meta->ehdr = get_or_map_file_range(meta, MIN_PAGE_SIZE, fd, 0);
 		if (!meta->ehdr) goto out;
 		assert(0 == memcmp(meta->ehdr, "\177ELF", 4));
 		size_t shdrs_sz = meta->ehdr->e_shnum * meta->ehdr->e_shentsize;
@@ -445,7 +479,7 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 				if ((shdr->sh_flags & SHF_ALLOC) &&
 						shdr->sh_size > 0)
 				{
-					__static_section_allocator_notify_define_section(meta, shdr);
+					__runt_sections_notify_define_section(meta, shdr);
 				}
 			}
 			// FIXME: the starts bitmaps need to be attached either to sections or
@@ -455,8 +489,10 @@ void __static_file_allocator_notify_load(void *handle, const void *load_site)
 	out:
 		close(fd);
 	}
+#if 0
 	init_allocsites_info(meta);
 	init_frames_info(meta);
+#endif
 }
 static void free_file_metadata(void *fm)
 {
@@ -498,7 +534,7 @@ static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *inf
 		// if this phdr's a LOAD
 		if (info->dlpi_phdr[i].p_type == PT_LOAD)
 		{
-			__static_segment_allocator_notify_define_segment(
+			__runt_segments_notify_define_segment(
 					meta,
 					i,
 					nload++
@@ -508,11 +544,12 @@ static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *inf
 	return 1;
 }
 
-void __static_allocator_notify_unload(const char *copied_filename)
+void __runt_files_notify_unload(const char *copied_filename)
 {
 	if (initialized)
 	{
 		assert(copied_filename);
+#if 0
 		/* For all big allocations, if we're the allocator and the filename matches, 
 		 * delete them. */
 		for (struct big_allocation *b = &big_allocations[0]; b != &big_allocations[NBIGALLOCS]; ++b)
@@ -530,29 +567,8 @@ void __static_allocator_notify_unload(const char *copied_filename)
 				}
 			}
 		}
+#else
+		// FIXME: free the file metadata
+#endif
 	}
 }
-
-static liballocs_err_t get_info(void * obj, struct big_allocation *b,
-	struct uniqtype **out_type, void **out_base,
-	unsigned long *out_size, const void **out_site)
-{
-	/* The only allocation we have is the bigalloc, so it's easy. */
-	assert(b);
-	if (out_type) *out_type = pointer_to___uniqtype____uninterpreted_byte;
-	if (out_base) *out_base = b->begin;
-	if (out_site) *out_site =
-		((struct file_metadata *) (b->meta.un.opaque_data.data_ptr))
-			->load_site;
-	if (out_size) *out_size = (char*) b->end - (char*) b->begin;
-	return NULL;
-}
-
-DEFAULT_GET_TYPE
-
-struct allocator __static_file_allocator = {
-	.name = "static-file",
-	.is_cacheable = 1,
-	.get_info = get_info,
-	.get_type = get_type
-};

@@ -1,5 +1,5 @@
-#ifndef LIBALLOCS_VAS_H_
-#define LIBALLOCS_VAS_H_
+#ifndef LIBRUNT_VAS_H_
+#define LIBRUNT_VAS_H_
 
 #define MINIMUM_USER_ADDRESS  ((char*)0x400000) /* FIXME: less {x86-64,GNU/Linux}-specific please */
 #define MAXIMUM_USER_ADDRESS  ((char*)(0x800000000000ul-1)) /* FIXME: less {x86-64,GNU/Linux}-specific please */
@@ -21,10 +21,12 @@
 #define MINPTR(a, b) \
 	((((char*)(a)) < ((char*)(b))) ? (a) : (b))
 
-#define PAGE_SIZE 4096 /* FIXME: this is sysdep */
-#define LOG_PAGE_SIZE 12
+#define MIN_PAGE_SIZE 4096 /* FIXME: this is sysdep */
+#define COMMON_PAGE_SIZE 4096 /* FIXME: this is sysdep */
+#define LOG_MIN_PAGE_SIZE 12
+#define LOG_COMMON_PAGE_SIZE 12
 
-#define PAGENUM(p) (((uintptr_t) (p)) >> LOG_PAGE_SIZE)
-#define ADDR_OF_PAGENUM(p) ((const void *) ((p) << LOG_PAGE_SIZE))
+#define PAGENUM(p) (((uintptr_t) (p)) >> LOG_MIN_PAGE_SIZE)
+#define ADDR_OF_PAGENUM(p) ((const void *) ((p) << LOG_MIN_PAGE_SIZE))
 
 #endif
