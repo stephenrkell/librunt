@@ -30,10 +30,6 @@ else
 vpath %.c $(srcdir)
 vpath %.c $(srcdir)/allocators
 
-allocators/%.d allocators/%.o:: allocators
-allocators:
-	mkdir -p allocators
-
 #%.o:: %.c
 #	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
 
@@ -78,9 +74,7 @@ CFLAGS += -DUSE_REAL_LIBUNWIND
 else
 CFLAGS += -fno-omit-frame-pointer
 endif
-ALLOCATOR_OBJS := $(patsubst $(srcdir)/allocators/%.c,allocators/%.o,$(wildcard $(srcdir)/allocators/*.c))
-$(info ALLOCATORS_OBJS is $(ALLOCATOR_OBJS))
-MAIN_OBJS := librunt.o $(UTIL_OBJS) $(ALLOCATOR_OBJS)
+MAIN_OBJS := librunt.o auxv.o files.o segments.o sections.o symbols.o $(UTIL_OBJS)
 PRELOAD_OBJS := preload.o
 
 # Generate deps.
