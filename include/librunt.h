@@ -21,28 +21,30 @@ typedef struct {
 #include <assert.h>
 
 /* We define a dladdr that caches stuff. */
-Dl_info dladdr_with_cache(const void *addr);
+Dl_info dladdr_with_cache(const void *addr) __attribute__((visibility("protected")));
 struct dl_phdr_info;
 int dl_for_one_object_phdrs(void *handle,
 	int (*callback) (struct dl_phdr_info *info, size_t size, void *data),
-	void *data);
+	void *data) __attribute__((visibility("protected")));
 const char *dynobj_name_from_dlpi_name(const char *dlpi_name,
-	void *dlpi_addr);
-struct link_map *__runt_files_lookup_by_addr(void *addr);
+	void *dlpi_addr) __attribute__((visibility("protected")));
+struct link_map *__runt_files_lookup_by_addr(void *addr) __attribute__((visibility("protected")));
+struct file_metadata;
+struct file_metadata *__runt_files_metadata_by_addr(void *addr) __attribute__((visibility("protected")));
 
 extern void *__top_of_initial_stack __attribute__((visibility("protected")));
 extern rlim_t __stack_lim_cur __attribute__((visibility("protected")));
 
-void __runt_auxv_init(void);
-_Bool __runt_auxv_get_asciiz(const char **out_start, const char **out_end);
-_Bool __runt_auxv_get_argv(const char ***out_start, const char ***out_terminator);
-_Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator);
-_Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator);
-void *__runt_auxv_get_program_entry_point(void);
+void __runt_auxv_init(void) __attribute__((visibility("protected")));
+_Bool __runt_auxv_get_asciiz(const char **out_start, const char **out_end) __attribute__((visibility("protected")));
+_Bool __runt_auxv_get_argv(const char ***out_start, const char ***out_terminator) __attribute__((visibility("protected")));
+_Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator) __attribute__((visibility("protected")));
+_Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator) __attribute__((visibility("protected")));
+void *__runt_auxv_get_program_entry_point(void) __attribute__((visibility("protected")));
 
-void __runt_files_init(void);
-void __runt_segments_init(void);
-void __runt_sections_init(void);
-void __runt_symbols_init(void);
+void __runt_files_init(void) __attribute__((visibility("protected")));
+void __runt_segments_init(void) __attribute__((visibility("protected")));
+void __runt_sections_init(void) __attribute__((visibility("protected")));
+void __runt_symbols_init(void) __attribute__((visibility("protected")));
 
 #endif

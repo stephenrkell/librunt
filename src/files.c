@@ -58,14 +58,19 @@ static pthread_mutex_t mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 #endif
 static int compare_lm_pair_by_load_addr(const void *v1, const void *v2)
 {
-	/* Trick: zeroes always compare *higher*. This is so that if we
-	 * null out an entry and re-sort, we compact to the beginning. */
+	/* Trick: null pointers always compare *higher*. This is so that if we
+	 * null out an entry and re-sort, we compact to the beginning.
+	 * (But that doesn't mean that a load address of zero compares higher...
+	 * it doesn't.) */
 	const struct lm_pair *p1 = v1;
 	const struct lm_pair *p2 = v2;
 	if (p1 == p2) return 0;
 	if (!p1->lm) /* p1 compares higher */ return 1;
-	if (!p2->lm) /* p2 compares higher */ return 1;
-	return p2->lm->l_addr - p1->lm->l_addr;
+	if (!p2->lm) /* p2 compares higher */ return -1;
+	intptr_t addr1 = (intptr_t) p1->lm->l_addr;
+	intptr_t addr2 = (intptr_t) p2->lm->l_addr;
+	/* avoid integer truncation issues by just returning -1 or 1 */
+	return (addr1 == addr2) ? 0 : (addr1 < addr2) ? -1 : 1;
 }
 static void insert_pair(struct link_map *lm, struct file_metadata *fm)
 {
@@ -87,12 +92,14 @@ static void delete_pair(struct lm_pair **p)
 struct lm_pair *lookup_by_addr(void *addr)
 {
 #define proj_npair_load_addr(p) (p)->lm->l_addr
+	if (npairs == 0) return NULL;
 	return bsearch_leq_generic(struct lm_pair, (uintptr_t) addr,
 		&lm_pairs[0], npairs, proj_npair_load_addr);
 #undef proj_npair_load_addr
 }
 struct link_map *__runt_files_lookup_by_addr(void *addr)
 {
+	if (!initialized) __runt_files_init();
 	struct lm_pair *p = lookup_by_addr(addr);
 	return p ? p->lm : NULL;
 }
@@ -101,6 +108,11 @@ static struct file_metadata *metadata_for_addr(void *addr)
 {
 	struct lm_pair *p = lookup_by_addr(addr);
 	return p ? p->fm : NULL;
+}
+struct file_metadata *__runt_files_metadata_by_addr(void *addr)
+{
+	if (!initialized) __runt_files_init();
+	return metadata_for_addr(addr);
 }
 
 static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *info, size_t size, void *file_metadata);
@@ -571,4 +583,49 @@ void __runt_files_notify_unload(const char *copied_filename)
 		// FIXME: free the file metadata
 #endif
 	}
+}
+
+const void *
+__runt_find_section_boundary(
+	unsigned char *search_addr,
+	ElfW(Word) flags,
+	_Bool backwards,
+	struct file_metadata **out_fm,
+	unsigned *out_shndx)
+{
+	/* Depending on whether backwards is {false,true}
+	 * we want to find some section's {base,end} address
+	 * that is {geq, leq} the search address
+	 * and where that section has all the flags in "flags".
+	 * We do this with a linear pass over the section headers.
+	 * We cannot assume that they are sorted by address, since
+	 * the ELF spec does not require that (as far as I can see).
+	 * It doesn't seem worth caching a sorted representation of
+	 * the section headers. */
+	struct file_metadata *fm = __runt_files_metadata_by_addr(search_addr);
+	if (!fm) return backwards ? NULL : (void*)-1;
+	uintptr_t vaddr = (uintptr_t) search_addr - fm->l->l_addr;
+	ElfW(Shdr) *best = NULL;
+	ptrdiff_t best_diff = PTRDIFF_MAX;
+	for (ElfW(Shdr) *cur = fm->shdrs;
+			cur != fm->shdrs + fm->ehdr->e_shnum;
+			++cur)
+	{
+		// is cur closer than 'best'?
+		if (!(cur->sh_flags & flags)) continue;
+		// the forward or backward distance from search_addr to cur's boundary
+		ptrdiff_t cur_diff = 
+			backwards ? (intptr_t) vaddr - (cur->sh_addr + cur->sh_size)
+			          : (intptr_t) cur->sh_addr - vaddr;
+		// if the diff is <0, it means we're on the wrong side of the boundary
+		if (cur_diff < 0) continue;
+		// i.e. we want the smallest positive distance
+		if (cur_diff < best_diff)
+		{ best = cur; best_diff = cur_diff; continue; }
+	}
+	if (!best) return backwards ? NULL : (void*)-1;
+	if (out_fm) *out_fm = fm;
+	if (out_shndx) *out_shndx = (best - fm->shdrs);
+	return (const void*) (fm->l->l_addr +
+		(backwards ? (best->sh_addr + best->sh_size) : best->sh_addr));
 }

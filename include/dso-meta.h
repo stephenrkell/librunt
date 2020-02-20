@@ -15,6 +15,7 @@ extern "C" {
 #include <cstdbool>
 #endif
 #include "bitmap.h"
+void abort(void) __attribute__((noreturn)); /* keep dependencies down */
 
 union sym_or_reloc_rec;
 struct segment_metadata
@@ -93,18 +94,26 @@ ElfW(Sym) *__runt_files_get_symtab_by_idx(struct file_metadata *meta, ElfW(Half)
 }
 
 
-void __runt_files_notify_load(void *handle, const void *load_site);
-void __runt_files_notify_unload(const char *copied_filename);
+void __runt_files_notify_load(void *handle, const void *load_site) __attribute__((visibility("protected")));
+void __runt_files_notify_unload(const char *copied_filename) __attribute__((visibility("protected")));
+
+const void *
+__runt_find_section_boundary(
+	unsigned char *search_addr,
+	ElfW(Word) flags,
+	_Bool backwards,
+	struct file_metadata **out_fm,
+	unsigned *out_shndx) __attribute__((visibility("protected")));
 
 void __runt_segments_notify_define_segment(
 	struct file_metadata *meta,
 	unsigned phndx,
 	unsigned loadndx
-);
+) __attribute__((visibility("protected")));
 void __runt_sections_notify_define_section(
 	struct file_metadata *meta,
 	const ElfW(Shdr) *shdr
-);
+) __attribute__((visibility("protected")));
 
 /* This is basically our supplement to the stuff we can access
  * from the struct link_map entries in the ld.so. There is some
