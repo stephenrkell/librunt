@@ -317,6 +317,10 @@ int dladdr1(const void *addr, Dl_info *info, void **extra, int flags)
 }
 
 struct dl_phdr_info;
+/* NOTE: if it gives us trouble with calling malloc or taking locks or
+ * whatever, we could now write our own dl_iterate_phdr, since we
+ * manage to hang on to enough file metadata that we can always reach
+ * the phdrs. For now, we try to use the libc one. */
 int dl_iterate_phdr(
                  int (*callback) (struct dl_phdr_info *info,
                                   size_t size, void *data),
@@ -335,7 +339,7 @@ int dl_iterate_phdr(
 		// write_string("Blah10\n");
 		if (__avoid_libdl_calls && !we_set_flag) abort();
 		// write_string("Blah11\n");
-		orig_dl_iterate_phdr = dlsym(RTLD_NEXT, "dl_iterate_phdr");
+		orig_dl_iterate_phdr = fake_dlsym(RTLD_NEXT, "dl_iterate_phdr");
 		// write_string("Blah12\n");
 		if (!orig_dl_iterate_phdr) abort();
 	}
@@ -350,16 +354,4 @@ int dl_iterate_phdr(
 	
 	if (we_set_flag) __avoid_libdl_calls = 0;
 	return ret;
-}
-
-static void init(void) __attribute__((constructor));
-static void init(void)
-{
-	/* We have to initialize these in a constructor, because if we 
-	 * do it lazily we might find that the first call is in an 
-	 * "avoid libdl" context. HMM, but then we just use fake_dlsym
-	 * to get the original pointer and call that. so doing it lazily
-	 * is okay, it seems. */
-	// write_string("Hello from preload init!\n");
-	
 }
