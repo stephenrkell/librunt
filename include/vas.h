@@ -29,4 +29,38 @@
 #define PAGENUM(p) (((uintptr_t) (p)) >> LOG_MIN_PAGE_SIZE)
 #define ADDR_OF_PAGENUM(p) ((const void *) ((p) << LOG_MIN_PAGE_SIZE))
 
+/* FIXME: these shouldn't be named RELF_* any more, but
+ * I can't remember what namespace collision prompted
+ * me to use the protected names. */
+#define RELF_ROUND_DOWN_(p, align) \
+	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
+	: (uintptr_t) ((align) * ((uintptr_t) (p) / (align))))
+#define RELF_ROUND_UP_(p, align) \
+	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
+	: (uintptr_t) ((align) * (1 + ((uintptr_t) (p) / (align)))))
+#define RELF_ROUND_DOWN_PTR_(p, align) \
+	((void*) (RELF_ROUND_DOWN_((p), (align))))
+#define RELF_ROUND_UP_PTR_(p, align) \
+	((void*) (RELF_ROUND_UP_((p), (align))))
+
+#ifndef ROUND_DOWN
+#define ROUND_DOWN(p, align) RELF_ROUND_DOWN_(p, align)
+#endif
+#ifndef ROUND_UP
+#define ROUND_UP(p, align) RELF_ROUND_UP_(p, align)
+#endif
+#ifndef ROUND_DOWN_PTR
+#define ROUND_DOWN_PTR(p, align) RELF_ROUND_DOWN_PTR_(p, align)
+#endif
+#ifndef ROUND_UP_PTR
+#define ROUND_UP_PTR(p, align) RELF_ROUND_UP_PTR_(p, align)
+#endif
+
+#ifndef ROUND_DOWN_PTR_TO_PAGE
+#define ROUND_DOWN_PTR_TO_PAGE(p) ROUND_DOWN_PTR((p), MIN_PAGE_SIZE)
+#endif
+#ifndef ROUND_UP_PTR_TO_PAGE
+#define ROUND_UP_PTR_TO_PAGE(p) ROUND_UP_PTR((p), MIN_PAGE_SIZE)
+#endif
+
 #endif

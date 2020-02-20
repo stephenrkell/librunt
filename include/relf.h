@@ -9,6 +9,7 @@ typedef bool _Bool;
 #include <stddef.h> /* for offsetof */
 #include <stdint.h>
 #include <elf.h>
+#include "vas.h" /* hmm -- may pollute namespace, but see how we go */
 #ifdef __FreeBSD__
 /* FreeBSD is POSIXly-correct by avoiding the typename "auxv_t". 
  * For now, we hack around this, but we should really follow its
@@ -31,30 +32,6 @@ __assert_fail (const char *assertion, const char *file,
 extern char **environ;
 extern void abort(void) __attribute__((noreturn));
 
-#define RELF_ROUND_DOWN_(p, align) \
-	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
-	: (uintptr_t) ((align) * ((uintptr_t) (p) / (align))))
-#define RELF_ROUND_UP_(p, align) \
-	(((uintptr_t) (p)) % (align) == 0 ? ((uintptr_t) (p)) \
-	: (uintptr_t) ((align) * (1 + ((uintptr_t) (p) / (align)))))
-#define RELF_ROUND_DOWN_PTR_(p, align) \
-	((void*) (RELF_ROUND_DOWN_((p), (align))))
-#define RELF_ROUND_UP_PTR_(p, align) \
-	((void*) (RELF_ROUND_UP_((p), (align))))
-
-#ifndef ROUND_DOWN
-#define ROUND_DOWN(p, align) RELF_ROUND_DOWN_(p, align)
-#endif
-#ifndef ROUND_UP
-#define ROUND_UP(p, align) RELF_ROUND_UP_(p, align)
-#endif
-#ifndef ROUND_DOWN_PTR
-#define ROUND_DOWN_PTR(p, align) RELF_ROUND_DOWN_PTR_(p, align)
-#endif
-#ifndef ROUND_UP_PTR
-#define ROUND_UP_PTR(p, align) RELF_ROUND_UP_PTR_(p, align)
-#endif
-
 /* 
 
 ELF introspection routines.
@@ -63,11 +40,6 @@ Some properties:
 
 - do not use libdl/ldso calls likely to do allocation or syscalls (dlopen, dlsym)
 - hence safe to use from a no-syscalls-please context (e.g. syscall emulator, allocator instrumentation)
-
-TODO:
-- dladdr + cache
-- outsource filename issues (i.e. don't read /proc/pid/maps) ? HMM. actually, implement this
-- grep -rl ElfW liballocs.hg node/src libcrunch.hg/ rsem/ppcmem/system-call-plumbing/trap-syscalls/src
 
 BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
 - get auxv
