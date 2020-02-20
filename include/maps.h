@@ -7,7 +7,7 @@
 #include <sys/sysctl.h>
 #include <sys/user.h>
 #else
-#include <asm-generic/fcntl.h>
+#include <fcntl.h>
 #endif
 
 /* Don't include stdio -- trap-syscalls won't like it, for example. */
