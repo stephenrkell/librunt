@@ -40,6 +40,8 @@ struct file_metadata
 	ElfW(Phdr) *phdrs; /* always mapped or copied by ld.so */
 	ElfW(Half) phnum;
 	unsigned nload; /* number of segments that are LOADs */
+	uintptr_t vaddr_begin; /* the lowest mapped vaddr in the object */
+	uintptr_t vaddr_end; /* one past the last mapped vaddr in the object */
 
 	ElfW(Sym) *dynsym; /* always mapped by ld.so */
 	unsigned char *dynstr; /* always mapped by ld.so */

@@ -93,8 +93,14 @@ struct lm_pair *lookup_by_addr(void *addr)
 {
 #define proj_npair_load_addr(p) (p)->lm->l_addr
 	if (npairs == 0) return NULL;
-	return bsearch_leq_generic(struct lm_pair, (uintptr_t) addr,
+	struct lm_pair *found = bsearch_leq_generic(struct lm_pair, (uintptr_t) addr,
 		&lm_pairs[0], npairs, proj_npair_load_addr);
+	if (!found) return NULL;
+	/* Sanity check: we know addr is >= the load address of this file,
+	 * but it within the file's dynamic extent? */
+	uintptr_t query_vaddr = (uintptr_t) addr - found->lm->l_addr;
+	if (query_vaddr < found->fm->vaddr_end) return found;
+	return NULL;
 #undef proj_npair_load_addr
 }
 struct link_map *__runt_files_lookup_by_addr(void *addr)
@@ -240,6 +246,8 @@ static void *get_or_map_file_range(struct file_metadata *file,
 			}
 		}
 	}
+	/* Without an fd (e.g. for the vdso) we can only return existing mappings. */
+	if (fd == -1) return NULL;
 	unsigned midx = 0;
 	for (; midx < MAPPING_MAX; ++midx)
 	{
@@ -276,43 +284,6 @@ static void *get_or_map_file_range(struct file_metadata *file,
 	return NULL;
 }
 
-struct dso_vaddr_bounds
-{
-	uintptr_t lowest_mapped_vaddr;
-	uintptr_t limit_vaddr;
-};
-static int vaddr_bounds_cb(struct dl_phdr_info *info, size_t size, void *bounds_as_void)
-{
-	struct dso_vaddr_bounds *bounds = (struct dso_vaddr_bounds *) bounds_as_void;
-	*bounds = (struct dso_vaddr_bounds) {
-		.lowest_mapped_vaddr = (uintptr_t) -1,
-		.limit_vaddr = 0
-	};
-
-	for (int i = 0; i < info->dlpi_phnum; ++i)
-	{
-		if (info->dlpi_phdr[i].p_type == PT_LOAD)
-		{
-			/* We can round down to int because vaddrs *within* an object 
-			 * will not be more than 2^31 from the object base. */
-			uintptr_t max_plus_one = info->dlpi_phdr[i].p_vaddr + info->dlpi_phdr[i].p_memsz;
-			if (max_plus_one > bounds->limit_vaddr) bounds->limit_vaddr = max_plus_one;
-			if (info->dlpi_phdr[i].p_vaddr < bounds->lowest_mapped_vaddr)
-			{
-				bounds->lowest_mapped_vaddr = info->dlpi_phdr[i].p_vaddr;
-			}
-		}
-	}
-	return 1;
-}
-
-static struct dso_vaddr_bounds get_dso_vaddr_bounds(void *handle)
-{
-	struct dso_vaddr_bounds bounds;
-	int ret = dl_for_one_object_phdrs(handle, vaddr_bounds_cb, &bounds);
-	return bounds;
-}
-
 void __runt_files_notify_load(void *handle, const void *load_site)
 {
 	struct link_map *l = (struct link_map *) handle;
@@ -343,10 +314,8 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	 * SUBTLETY: this contiguous sequence does not start at the
 	 * load address -- it starts at the first LOAD's base vaddr.
 	 * See the hack in mmap.c. */
-	struct dso_vaddr_bounds bounds = get_dso_vaddr_bounds(handle);
-	assert(bounds.lowest_mapped_vaddr != (uintptr_t) -1);
-	struct big_allocation *lowest_containing_mapping_bigalloc = NULL;
 #if 0
+	struct big_allocation *lowest_containing_mapping_bigalloc = NULL;
 	struct mapping_entry *m = __liballocs_get_memory_mapping(
 		(void*) (l->l_addr + bounds.lowest_mapped_vaddr),
 		&lowest_containing_mapping_bigalloc);
@@ -382,6 +351,19 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	meta->phdrs = (ElfW(Phdr) *) sinfo.phdrs;
 	meta->phnum = sinfo.phnum;
 	meta->nload = sinfo.nload;
+	meta->vaddr_begin = (uintptr_t)-1;
+	meta->vaddr_end = 0;
+	for (int i = 0; i < meta->phnum; ++i)
+	{
+		if (sinfo.phdrs[i].p_type == PT_LOAD)
+		{
+			/* We can round down to int because vaddrs *within* an object 
+			 * will not be more than 2^31 from the object base. */
+			if (sinfo.phdrs[i].p_vaddr < meta->vaddr_begin) meta->vaddr_begin = sinfo.phdrs[i].p_vaddr;
+			uintptr_t max_plus_one = sinfo.phdrs[i].p_vaddr + sinfo.phdrs[i].p_memsz;
+			if (max_plus_one > meta->vaddr_end) meta->vaddr_end = max_plus_one;
+		}
+	}
 	/* We still haven't filled in everything... */
 	insert_pair(l, meta);
 #if 0
@@ -425,8 +407,13 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	assert(meta->phdrs);
 	assert(meta->phnum && meta->phnum != -1);
 	/* Now fill in the PT_DYNAMIC stuff. */
-	meta->dynsym = (ElfW(Sym) *) dynamic_lookup(meta->l->l_ld, DT_SYMTAB)->d_un.d_ptr; /* always mapped by ld.so */
-	meta->dynstr = (unsigned char *) dynamic_lookup(meta->l->l_ld, DT_STRTAB)->d_un.d_ptr; /* always mapped by ld.so */
+	/* Linux's vdso doesn't get its dynstr/dynsym pointers relocated
+	 * (i.e. the vdso's load address is not added to them), but other
+	 * libs do get this fixup. We can detect and handle this. */
+#define MAYBE_FIXUP(addr) \
+	(((uintptr_t)(addr) < meta->l->l_addr) ? (meta->l->l_addr + (addr)) : (addr))
+	meta->dynsym = (ElfW(Sym) *) MAYBE_FIXUP(dynamic_lookup(meta->l->l_ld, DT_SYMTAB)->d_un.d_ptr); /* always mapped by ld.so */
+	meta->dynstr = (unsigned char *) MAYBE_FIXUP(dynamic_lookup(meta->l->l_ld, DT_STRTAB)->d_un.d_ptr); /* always mapped by ld.so */
 	meta->dynstr_end = meta->dynstr + dynamic_lookup(meta->l->l_ld, DT_STRSZ)->d_un.d_val; /* always mapped by ld.so */
 	/* Now we have the most file metadata we can get without re-mapping extra
 	 * parts of the file. */
@@ -439,67 +426,66 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	if (fd < 0)
 	{
 		// warn, at a debug level that depends on whether the path looks sane
-		debug_printf((meta->filename && meta->filename[0] == '/' ? 0 : 5), "could not re-open %s\n", l->l_name);
+		debug_printf((meta->filename && meta->filename[0] == '/' ? 0 : 5),
+			"could not re-open `%s'\n", l->l_name);
+		fd = -1; /* We can still work with this, just not make new mappings. */
 	}
-	else // fd >= 0
-	{
-		meta->ehdr = get_or_map_file_range(meta, MIN_PAGE_SIZE, fd, 0);
-		if (!meta->ehdr) goto out;
-		assert(0 == memcmp(meta->ehdr, "\177ELF", 4));
-		size_t shdrs_sz = meta->ehdr->e_shnum * meta->ehdr->e_shentsize;
-		// assert sanity
+	meta->ehdr = get_or_map_file_range(meta, MIN_PAGE_SIZE, fd, 0);
+	if (!meta->ehdr) goto out;
+	assert(0 == memcmp(meta->ehdr, "\177ELF", 4));
+	size_t shdrs_sz = meta->ehdr->e_shnum * meta->ehdr->e_shentsize;
+	// assert sanity
 #define MAX_SANE_SHDRS_SIZE 512*sizeof(ElfW(Shdr))
-		assert(shdrs_sz < MAX_SANE_SHDRS_SIZE);
-		meta->shdrs = get_or_map_file_range(meta, shdrs_sz, fd, meta->ehdr->e_shoff);
-		if (meta->shdrs)
-		{
+	assert(shdrs_sz < MAX_SANE_SHDRS_SIZE);
+	meta->shdrs = get_or_map_file_range(meta, shdrs_sz, fd, meta->ehdr->e_shoff);
+	if (meta->shdrs)
+	{
 #ifndef NDEBUG /* basic sanity checks for an ELF header */
-			for (unsigned i = 0; i < meta->ehdr->e_shnum; ++i)
-			{
-				assert(i == 0 || meta->shdrs[i].sh_offset >= sizeof (ElfW(Ehdr)));
-				assert(i == 0 || meta->shdrs[i].sh_size < UINT_MAX);
-				assert(meta->shdrs[i].sh_size == 0 || meta->shdrs[i].sh_entsize == 0
-					|| meta->shdrs[i].sh_entsize <= meta->shdrs[i].sh_size);
-			}
-#endif
-			for (unsigned i = 0; i < meta->ehdr->e_shnum; ++i)
-			{
-#define GET_OR_MAP_SCN(__j) get_or_map_file_range(meta, meta->shdrs[(__j)].sh_size, fd, meta->shdrs[(__j)].sh_offset)
-				if (meta->shdrs[i].sh_type == SHT_DYNSYM)
-				{
-					meta->dynsymndx = i;
-					meta->dynstrndx = meta->shdrs[i].sh_link;
-				}
-				if (meta->shdrs[i].sh_type == SHT_SYMTAB)
-				{
-					meta->symtabndx = i;
-					meta->symtab = GET_OR_MAP_SCN(i);
-					meta->strtabndx = meta->shdrs[i].sh_link;
-					meta->strtab = GET_OR_MAP_SCN(meta->shdrs[i].sh_link);
-				}
-				if (i == meta->ehdr->e_shstrndx)
-				{
-					meta->shstrtab = GET_OR_MAP_SCN(i);
-				}
-#undef GET_OR_MAP_SCN
-			}
-
-			/* Now define sections for all the allocated sections in the shdrs
-			 * which overlap this phdr. */
-			for (ElfW(Shdr) *shdr = meta->shdrs; shdr != meta->shdrs + meta->ehdr->e_shnum; ++shdr)
-			{
-				if ((shdr->sh_flags & SHF_ALLOC) &&
-						shdr->sh_size > 0)
-				{
-					__runt_sections_notify_define_section(meta, shdr);
-				}
-			}
-			// FIXME: the starts bitmaps need to be attached either to sections or
-			// to segments (if we don't have section headers). That's a bit nasty.
-			// It probably still works though.
+		for (unsigned i = 0; i < meta->ehdr->e_shnum; ++i)
+		{
+			assert(i == 0 || meta->shdrs[i].sh_offset >= sizeof (ElfW(Ehdr)));
+			assert(i == 0 || meta->shdrs[i].sh_size < UINT_MAX);
+			assert(meta->shdrs[i].sh_size == 0 || meta->shdrs[i].sh_entsize == 0
+				|| meta->shdrs[i].sh_entsize <= meta->shdrs[i].sh_size);
 		}
+#endif
+		for (unsigned i = 0; i < meta->ehdr->e_shnum; ++i)
+		{
+#define GET_OR_MAP_SCN(__j) get_or_map_file_range(meta, meta->shdrs[(__j)].sh_size, fd, meta->shdrs[(__j)].sh_offset)
+			if (meta->shdrs[i].sh_type == SHT_DYNSYM)
+			{
+				meta->dynsymndx = i;
+				meta->dynstrndx = meta->shdrs[i].sh_link;
+			}
+			if (meta->shdrs[i].sh_type == SHT_SYMTAB)
+			{
+				meta->symtabndx = i;
+				meta->symtab = GET_OR_MAP_SCN(i);
+				meta->strtabndx = meta->shdrs[i].sh_link;
+				meta->strtab = GET_OR_MAP_SCN(meta->shdrs[i].sh_link);
+			}
+			if (i == meta->ehdr->e_shstrndx)
+			{
+				meta->shstrtab = GET_OR_MAP_SCN(i);
+			}
+#undef GET_OR_MAP_SCN
+		}
+
+		/* Now define sections for all the allocated sections in the shdrs
+		 * which overlap this phdr. */
+		for (ElfW(Shdr) *shdr = meta->shdrs; shdr != meta->shdrs + meta->ehdr->e_shnum; ++shdr)
+		{
+			if ((shdr->sh_flags & SHF_ALLOC) &&
+					shdr->sh_size > 0)
+			{
+				__runt_sections_notify_define_section(meta, shdr);
+			}
+		}
+		// FIXME: the starts bitmaps need to be attached either to sections or
+		// to segments (if we don't have section headers). That's a bit nasty.
+		// It probably still works though.
 	out:
-		close(fd);
+		if (fd >= 0) close(fd);
 	}
 #if 0
 	init_allocsites_info(meta);
