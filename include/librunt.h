@@ -42,6 +42,8 @@ _Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator)
 _Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator) __attribute__((visibility("protected")));
 void *__runt_auxv_get_program_entry_point(void) __attribute__((visibility("protected")));
 
+void *__runt_tls_block_base(void) __attribute__((visibility("protected")));
+
 void __runt_files_init(void) __attribute__((visibility("protected")));
 void __runt_segments_init(void) __attribute__((visibility("protected")));
 void __runt_sections_init(void) __attribute__((visibility("protected")));

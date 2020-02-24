@@ -74,7 +74,7 @@ CFLAGS += -DUSE_REAL_LIBUNWIND
 else
 CFLAGS += -fno-omit-frame-pointer
 endif
-MAIN_OBJS := librunt.o auxv.o files.o segments.o sections.o symbols.o $(UTIL_OBJS)
+MAIN_OBJS := librunt.o auxv.o files.o segments.o sections.o symbols.o tls.o $(UTIL_OBJS)
 PRELOAD_OBJS := preload.o
 
 # Generate deps.
