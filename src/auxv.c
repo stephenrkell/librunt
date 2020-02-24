@@ -36,7 +36,15 @@ void __runt_auxv_init(void)
 	if (tried_to_initialize) return;
 	tried_to_initialize = 1;
 
-	auxv_array_start = get_auxv((const char **) environ, environ[0]);
+	/* PROBLEM. we might want to be called before libc is initialized.
+	 * E.g. we do this in trace-syscalls.so, which uses *us* to get
+	 * the auxv address and initialize its private copy of musl. BUT
+	 * we bootstrap access to the auxv via environ, which is not yet
+	 * initialized if libc is not initialized.
+	 * HACK: we use __libc_stack_end if it is defined. */
+	if (!environ && !&__libc_stack_end) abort();
+	if (environ) auxv_array_start = get_auxv((const char **) environ, environ[0]);
+	else auxv_array_start = get_auxv_via_libc_stack_end();
 	if (!auxv_array_start) return;
 
 	struct auxv_limits lims = get_auxv_limits(auxv_array_start);
