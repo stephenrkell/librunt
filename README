@@ -1,4 +1,21 @@
-It doesn't build or run anything yet. You can use relf.h, though.
+librunt is a small library for building extensions to the ELF-level
+process runtime typically implemented by a dynamic linker.
 
-The idea is to pull the generic low-lying bits out of liballocs. I might 
-also license them more liberally than liballocs's LGPL.
+The main parts are:
+
+* relf.h, an inlines-only header for introspecting on ELF-level structures
+within a process (usable without linking in librunt)
+
+* {bitmap,bitops,vas,maps}.h -- utility code
+
+* librunt.h -- calls for querying addresses (think souped-up dladdr)
+
+* dso-meta.h -- extended per-DSO metadata (think: souped-up link.h)
+
+To work, librunt must be preloaded (e.g. as librunt_preload.so) into the
+process. One day soon it should be possible to use libgerald to build a
+new dynamic linker, runtld.so, which may be a nicer interface.
+
+You can also use librunt as a basis for an extended runtime that does more
+interesting things. liballocs and (transitively) libcrunch are instances
+of this (or will be, once I backport liballocs).
