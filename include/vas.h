@@ -16,10 +16,10 @@
 #define BIGGEST_SANE_USER_ALLOC ((1ull<<32)-1ull)
 
 #define MAXPTR(a, b) \
-	((((char*)(a)) > ((char*)(b))) ? (a) : (b))
+	((((uintptr_t)(a)) > ((uintptr_t)(b))) ? (a) : (b))
 
 #define MINPTR(a, b) \
-	((((char*)(a)) < ((char*)(b))) ? (a) : (b))
+	((((uintptr_t)(a)) < ((uintptr_t)(b))) ? (a) : (b))
 
 #define MIN_PAGE_SIZE 4096 /* FIXME: this is sysdep */
 #define COMMON_PAGE_SIZE 4096 /* FIXME: this is sysdep */
