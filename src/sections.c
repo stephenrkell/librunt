@@ -39,14 +39,5 @@ void __runt_sections_notify_define_section(
 		debug_printf(3, "notified of section at %p within %s\n",
 			(void*) (meta->l->l_addr + shdr->sh_addr),
 			dynobj_name_from_dlpi_name(meta->l->l_name, (void*) meta->l->l_addr));
-#if 0
-		/* We simply create a bigalloc from the off, if we're nonzero-sized.
-		 * That might be a bit extravagant. But actually it's necessary!
-		 * The data segment's suballocator needs to be a malloc allocator.
-		 * By contrast, we (the section allocator) don't need to be marked
-		 * as the suballocator of the segment allocator if our allocs are
-		 * bigallocs. */
-		__static_section_allocator_ensure_big(meta, shdr);
-#endif
 	}
 }

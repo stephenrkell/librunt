@@ -96,6 +96,41 @@ int dl_for_one_object_phdrs(void *handle,
 	return dl_iterate_phdr(dl_for_one_phdr_cb, &args);
 }
 
+#ifndef MAX_EARLY_LIBS
+#define MAX_EARLY_LIBS 16
+#endif
+struct link_map *early_lib_handles[MAX_EARLY_LIBS] __attribute__((visibility("hidden")));
+void init_early_libs(void) __attribute__((visibility("hidden")));
+void init_early_libs(void)
+{
+	if (early_lib_handles[0]) return;
+	/* We have to scan for the libraries that were active
+	 * before we caught our first dlopen.
+	 *
+	 * Then, when we initialize the static file metadata, we
+	 * can avoid double-processing any libs that were opened
+	 * by  don't
+	 * want todouble-process any files that were already notified
+	 * (below) because they were opened with our dlopen wrapper. */
+	unsigned idx = 0;
+	for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
+	{
+		if (idx == MAX_EARLY_LIBS) abort();
+		early_lib_handles[idx++] = l;
+	}
+	/* This is snapshotting exactly those libs that are active
+	 * when we first trap dlopen. Is that set identical to the
+	 * ones we need to snapshot for "early /proc/pid/maps" purposes?
+	 * When do we "start trapping dlopens", really? The problem is
+	 * that not all DSO loads happen through the public "dlopen" symbol.
+	 * But probably it's only the "initial libraries" that fall into
+	 * that category. So an "initial objects snapshot" would be fine?
+	 * We could just assert that this has already happened in dlopen,
+	 * below -- it doesn't have to be triggered from dlopen itself,
+	 * and probably shouldn't be.
+	 */
+}
+
 static _Bool done_init;
 void __librunt_main_init(void) __attribute__((constructor(101),visibility("protected")));
 // NOTE: runs *before* the constructor in preload.c
@@ -170,9 +205,6 @@ const char *dynobj_name_from_dlpi_name(const char *dlpi_name, void *dlpi_addr)
 
 void *__librunt_main_bp; // beginning of main's stack frame
 
-static void print_exit_summary(void)
-{
-}
 int __librunt_global_init(void) __attribute__((constructor(103),visibility("protected")));
 int __librunt_global_init(void)
 {
@@ -187,10 +219,7 @@ int __librunt_global_init(void)
 	static _Bool trying_to_initialize;
 	if (trying_to_initialize) return 0;
 	trying_to_initialize = 1;
-	
-	// print a summary when the program exits
-	atexit(print_exit_summary);
-	
+
 	// figure out where our output goes
 	const char *errvar = getenv("LIBRUNT_ERR");
 	if (errvar)

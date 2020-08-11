@@ -3,9 +3,11 @@ LIBRUNT := $(realpath $(dir $(THIS_MAKEFILE))/..)
 SRCROOT := $(dir $(THIS_MAKEFILE))../
 srcdir := $(SRCROOT)/src
 
-CFLAGS += -std=gnu11 -fPIC -Wall -Wextra -g -I../include -I$(SRCROOT)/include -I$(LIBMALLOCHOOKS) \
-   -I$(LIBSYSTRAP) -I$(LIBRUNT)/include -I$(LIBDLBIND)/include -I$(srcdir) -Wno-unused \
-   -flto -ffat-lto-objects
+CFLAGS += -std=gnu11 -fPIC -Wall -Wextra -g
+CFLAGS += -I../include -I$(SRCROOT)/include -I$(LIBMALLOCHOOKS) \
+   -I$(LIBSYSTRAP) -I$(LIBRUNT)/include -I$(LIBDLBIND)/include -I$(srcdir) -Wno-unused
+CFLAGS += -flto -ffat-lto-objects
+CFLAGS += -ffunction-sections   # clients may want to wrap individual functions
 LDFLAGS += -L$(LIBDLBIND)/lib
 
 # run-from-srcdir case:
@@ -28,7 +30,6 @@ $(MAKECMDGOALS):
 else
 # the rest
 vpath %.c $(srcdir)
-vpath %.c $(srcdir)/allocators
 
 #%.o:: %.c
 #	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
@@ -103,13 +104,37 @@ LIBRUNT_NONSHARED_A_OBJS := $(NOPRELOAD_OBJS) $(NONSHARED_OBJS)
 LIBRUNT_A_OBJS := $(MAIN_OBJS) $(NOPRELOAD_OBJS) $(PRELOAD_OBJS)
 OBJCOPY ?= objcopy
 librunt_preload.so: LDLIBS += -ldl $(LIBUNWIND_LDLIBS)
-LIBRUNT_PRELOAD_SO_REDEFINES ?= __private_malloc=malloc __private_free=free __private_strdup=strdup
+# We must use gold to link, because BFD linker complains about
+# "relocation R_X86_64_PC32 against protected symbol `...'
+#  can not be used when making a shared object"
+# ... apparently defeating what I thought was the purpose of 'protected'.
+# It makes sense for protected data, but not for protected functions,
+# since those can't be copy-reloc'd. The right solution is to forbid
+# copy relocs on protected symbols, not to forbid PC-relative reference
+# to them. Some versions of BFD still use the more conservative "refuse
+# to local-bind to protecteds" (on the grounds that they *might* be
+# copy-reloc'd and hence reside elsewhere). See binutils bug 19612.
+# Since the linker doesn't know that the reference is to code, not data,
+# the BFD argument seems to be that allowing this is a gold bug. If gold
+# stops allowing us to link, we probably need to forget "protected" and
+# use a pair of aliases, one hidden and one default.
+librunt_preload.so: LDFLAGS += -fuse-ld=gold
+# Our .o files come with references to internally-named functions like
+# __private_malloc and so on. Some extenders (liballocs, libcrunch...)
+# will want to provide these, but we just defsym them to the usual.
+LIBRUNT_PRELOAD_SO_REDEFINES ?= __private_malloc=malloc \
+__private_free=free \
+__private_strdup=strdup
+# To make the defsym'ing happen, we do objcopy on the .a file.
+# FIXME: why not just give --defsym to ld? There's probably a reason....
 librunt_preload.so: librunt_preload.a # dlmalloc.a
 	tmparch="$$(mktemp)" && \
 	 $(OBJCOPY) $(foreach r,$(LIBRUNT_PRELOAD_SO_REDEFINES),--redefine-sym $(r)) $< "$$tmparch" && \
 	$(CC) $(filter-out,-flto,$(CFLAGS)) \
 	-shared -o "$@" -fno-lto \
-	$(filter-out,-flto,$(LDFLAGS)) $(LDLIBS) \
+	$(filter-out -flto,$(LDFLAGS)) $(LDLIBS) \
+        -Wl,--defsym,__wrap___runt_files_notify_load=__runt_files_notify_load \
+        -Wl,--defsym,__wrap___runt_files_metadata_by_addr=__runt_files_metadata_by_addr \
 	-Wl,--whole-archive "$$tmparch" -Wl,--no-whole-archive; \
 	status=$$?; echo NOT REALLY rm -f "$$tmparch"; exit "$$status"
 
@@ -140,7 +165,6 @@ librunt_dummyweaks.so: dummyweaks.o
 .PHONY: clean
 clean: 
 	rm -f *.o */*.o $(filter-out librunt.so,$(wildcard *.so)) *.d */*.d *.a
-	rm -r allocators
 
 vpath %.h $(srcdir)/%.h
 

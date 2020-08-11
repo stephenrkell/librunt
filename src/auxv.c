@@ -12,21 +12,22 @@
 #include "relf.h"
 #include "librunt_private.h"
 
-static const char *asciiz_start;
-static const char *asciiz_end;
+const char *__auxv_asciiz_start __attribute__((visibility("protected")));
+const char *__auxv_asciiz_end __attribute__((visibility("protected")));
 
-static const char **env_vector_start;
-static const char **env_vector_terminator;
+const char **__env_vector_start __attribute__((visibility("protected")));
+const char **__env_vector_terminator __attribute__((visibility("protected")));
 
-static const char **argv_vector_start;
-static const char **argv_vector_terminator;
+const char **__argv_vector_start __attribute__((visibility("protected")));
+const char **__argv_vector_terminator __attribute__((visibility("protected")));
 
-static ElfW(auxv_t) *auxv_array_start;
-static ElfW(auxv_t) *auxv_array_terminator;
+ElfW(auxv_t) *__auxv_array_start __attribute__((visibility("protected")));
+ElfW(auxv_t) *__auxv_array_terminator __attribute__((visibility("protected")));
 
-static intptr_t *p_argcount;
+intptr_t *__auxv_program_argcountp __attribute__((visibility("protected")));
 
-void *program_entry_point;
+void *__program_entry_point __attribute__((visibility("protected")));
+void *__top_of_initial_stack __attribute__((visibility("protected")));
 
 static _Bool tried_to_initialize;
 void __runt_auxv_init(void) __attribute__((constructor(101)));
@@ -43,55 +44,54 @@ void __runt_auxv_init(void)
 	 * initialized if libc is not initialized.
 	 * HACK: we use __libc_stack_end if it is defined. */
 	if (!environ && !&__libc_stack_end) abort();
-	if (environ) auxv_array_start = get_auxv((const char **) environ, environ[0]);
-	else auxv_array_start = get_auxv_via_libc_stack_end();
-	if (!auxv_array_start) return;
+	if (environ) __auxv_array_start = get_auxv((char **) environ, environ[0]);
+	else __auxv_array_start = get_auxv_via_libc_stack_end();
+	if (!__auxv_array_start) return;
 
-	struct auxv_limits lims = get_auxv_limits(auxv_array_start);
-	asciiz_start = lims.asciiz_start;
-	asciiz_end = lims.asciiz_end;
-	env_vector_start = lims.env_vector_start;
-	env_vector_terminator = lims.env_vector_terminator;
-	argv_vector_start = lims.argv_vector_start;
-	argv_vector_terminator = lims.argv_vector_terminator;
-	auxv_array_terminator = lims.auxv_array_terminator;
-	p_argcount = lims.p_argcount;
+	struct auxv_limits lims = get_auxv_limits(__auxv_array_start);
+	__auxv_asciiz_start = lims.asciiz_start;
+	__auxv_asciiz_end = lims.asciiz_end;
+	__env_vector_start = lims.env_vector_start;
+	__env_vector_terminator = lims.env_vector_terminator;
+	__argv_vector_start = lims.argv_vector_start;
+	__argv_vector_terminator = lims.argv_vector_terminator;
+	__auxv_array_terminator = lims.auxv_array_terminator;
+	__auxv_program_argcountp = lims.p_argcount;
 	
-	ElfW(auxv_t) *found_at_entry = auxv_lookup(auxv_array_start, AT_ENTRY);
-	if (found_at_entry) program_entry_point = (void*) found_at_entry->a_un.a_val;
+	ElfW(auxv_t) *found_at_entry = auxv_lookup(__auxv_array_start, AT_ENTRY);
+	if (found_at_entry) __program_entry_point = (void*) found_at_entry->a_un.a_val;
 }
 
-void *__top_of_initial_stack __attribute__((visibility("protected")));
 
 _Bool __runt_auxv_get_asciiz(const char **out_start, const char **out_end)
 {
-	if (out_start) *out_start = asciiz_start;
-	if (out_end) *out_end = asciiz_end;
+	if (out_start) *out_start = __auxv_asciiz_start;
+	if (out_end) *out_end = __auxv_asciiz_end;
 	return 1;
 }
 _Bool __runt_auxv_get_argv(const char ***out_start, const char ***out_terminator)
 {
-	if (out_start) *out_start = argv_vector_start;
-	if (out_terminator) *out_terminator = argv_vector_terminator;
+	if (out_start) *out_start = __argv_vector_start;
+	if (out_terminator) *out_terminator = __argv_vector_terminator;
 	return 1;
 }
 
 _Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator)
 {
-	if (out_start) *out_start = env_vector_start;
-	if (out_terminator) *out_terminator = env_vector_terminator;
+	if (out_start) *out_start = __env_vector_start;
+	if (out_terminator) *out_terminator = __env_vector_terminator;
 	return 1;
 }
 
 _Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator)
 {
-	if (out_start) *out_start = auxv_array_start;
-	if (out_terminator) *out_terminator = auxv_array_terminator;
+	if (out_start) *out_start = __auxv_array_start;
+	if (out_terminator) *out_terminator = __auxv_array_terminator;
 	return 1;
 }
 void *__runt_auxv_get_program_entry_point(void)
 {
-	return program_entry_point;
+	return __program_entry_point;
 }
 
 /* Typically on a Linux machine, the key/value content of the auxv would include

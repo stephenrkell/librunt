@@ -24,9 +24,6 @@ void __runt_symbols_init(void)
 	{
 		trying_to_initialize = 1;
 		/* Initialize what we depend on. */
-#if 0
-		__mmap_allocator_init();
-#endif
 		__runt_segments_init();
 		__runt_sections_init();
 		initialized = 1;
@@ -35,8 +32,11 @@ void __runt_symbols_init(void)
 }
 
 /* FIXME: invalidate cache entries on dlclose().
- * FIXME: get rid of this code. Integrate the dladdr cache into the usual memrange cache
- * and/or the new static file/symbol alloc metadata. */
+ * FIXME: get rid of this cache. Integrate the dladdr cache into the usual memrange cache
+ * and/or the new static file/symbol alloc metadata. That means this code can probably
+ * move back to liballocs. Also we should change the name from dladdr_with_cache...
+ * the main utility of this function is that it returns the struct directly, so can be
+ * called from a debugger. */
 #ifndef DLADDR_CACHE_SIZE
 #define DLADDR_CACHE_SIZE 16
 #endif

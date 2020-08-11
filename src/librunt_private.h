@@ -13,6 +13,8 @@ char *get_exe_fullname(void) __attribute__((visibility("hidden")));
 char *get_exe_basename(void) __attribute__((visibility("hidden")));
 char *realpath_quick(const char *arg) __attribute__((visibility("hidden")));
 
+void init_early_libs(void) __attribute__((visibility("hidden")));
+
 extern int __librunt_debug_level;
 extern FILE *stream_err;
 #define debug_printf(lvl, fmt, ...) do { \

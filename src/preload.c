@@ -18,19 +18,18 @@
 #include "relf.h"
 #include "dso-meta.h"
 
-/* NOTE that our wrappers are all init-on-use. This is because 
+/* NOTE that our wrappers are all init-on-use. This is because
  * we might get called very early, and even if we're not trying to
  * intercept the early calls, we still need to be able to delegate. 
  * For that, we need our underyling function pointers. */
 
-#ifndef MAX_EARLY_LIBS
-#define MAX_EARLY_LIBS 16
-#endif
-
-/* some signalling to clients */
+/* Clients may use this to decide whether it's safe to call into
+ * the real libdl... we set it when we're about to call into libdl.
+ * So if a client gets control, it knows a libdl call is active and
+ * it shouldn't do one reentrantly. And we apply the same rule
+ * to ourselves. */
 _Bool __avoid_libdl_calls;
 
-struct link_map *early_lib_handles[MAX_EARLY_LIBS] __attribute((visibility("hidden")));
 static char *our_dlerror;
 static char *call_orig_dlerror(void);
 
@@ -38,6 +37,7 @@ void *(*orig_dlopen)(const char *, int) __attribute__((visibility("hidden")));
 void *dlopen(const char *filename, int flag)
 {
 	_Bool we_set_flag = 0;
+	void *(*dlsym_to_use)(void *, const char *);
 	if (!__avoid_libdl_calls) { we_set_flag = 1; __avoid_libdl_calls = 1; }
 	
 	if (!orig_dlopen) // happens if we're called before liballocs init
@@ -45,21 +45,10 @@ void *dlopen(const char *filename, int flag)
 		orig_dlopen = dlsym(RTLD_NEXT, "dlopen");
 		if (!orig_dlopen) abort();
 	}
-	if (!early_lib_handles[0])
-	{
-		/* We have to scan for the libraries that were active
-		 * before we started trapping dlopens. This is so that
-		 * when we initialize the static file allocator, we don't
-		 * double-process any files that were already notified
-		 * (below) because they were opened with our dlopen wrapper. */
-		unsigned idx = 0;
-		for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
-		{
-			if (idx == MAX_EARLY_LIBS) abort();
-			early_lib_handles[idx++] = l;
-		}
-	}
-	assert(early_lib_handles[0]);
+	/* We ensure that all files loaded by the first dlopen
+	 * have been seen. */
+	__runt_files_init();
+	if (!early_lib_handles[0]) abort();
 
 	void *ret = NULL;
 	_Bool file_already_loaded = 0;
@@ -139,7 +128,7 @@ int dlclose(void *handle)
 	if (!__avoid_libdl_calls) { we_set_flag = 1; __avoid_libdl_calls = 1; }
 	
 	static int (*orig_dlclose)(void *);
-	if(!orig_dlclose)
+	if (!orig_dlclose)
 	{
 		orig_dlclose = dlsym(RTLD_NEXT, "dlclose");
 		orig_dlopen = dlsym(RTLD_NEXT, "dlopen");

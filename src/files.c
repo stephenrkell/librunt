@@ -20,6 +20,11 @@
 #include "librunt_private.h"
 int fstat(int fd, struct stat *buf);
 
+/* Used to ensure --wrappability of the relevant symbols.
+ * See note on __runt_files_notify_load below. */
+struct file_metadata *__wrap___runt_files_notify_load(void *handle, const void *load_site);
+struct file_metadata *__wrap___runt_files_metadata_by_addr(void *addr);
+
 /* This file's logic really belongs in the dynamic linker.
  * It is responding to load and unload events.
  * Also, it'd be great if we could keep a file descriptor on
@@ -29,9 +34,6 @@ int fstat(int fd, struct stat *buf);
 
 static _Bool trying_to_initialize;
 static _Bool initialized;
-
-// we define this a bit closer to the allocating code, but declare it now
-static void free_file_metadata(void *fm);
 
 struct lm_pair
 {
@@ -72,21 +74,41 @@ static int compare_lm_pair_by_load_addr(const void *v1, const void *v2)
 	/* avoid integer truncation issues by just returning -1 or 1 */
 	return (addr1 == addr2) ? 0 : (addr1 < addr2) ? -1 : 1;
 }
-static void insert_pair(struct link_map *lm, struct file_metadata *fm)
+void __insert_file_metadata(struct link_map *lm, struct file_metadata *fm) __attribute__((weak,visibility("protected")));
+void __insert_file_metadata(struct link_map *lm, struct file_metadata *fm)
 {
 	BIG_LOCK
 	lm_pairs[npairs++] = (struct lm_pair) { .lm = lm, .fm = fm };
 	qsort(lm_pairs, npairs, sizeof lm_pairs[0], compare_lm_pair_by_load_addr);
 	BIG_UNLOCK
 }
-static void delete_pair(struct lm_pair **p)
+void __delete_file_metadata(struct file_metadata **p) __attribute__((weak,visibility("protected")));
+void __delete_file_metadata(struct file_metadata **p)
 {
-	free_file_metadata((*p)->fm);
+	__runt_deinit_file_metadata(*p);
+	__private_free(*p);
 	BIG_LOCK
-	*p = NULL;
+	/* Clear both pointers in the pair */
+	bzero((char *)((uintptr_t) p - offsetof(struct lm_pair, fm)), sizeof (struct lm_pair));
 	qsort(lm_pairs, npairs, sizeof lm_pairs[0], compare_lm_pair_by_load_addr);
 	--npairs;
 	BIG_UNLOCK
+}
+struct file_metadata *__alloc_file_metadata(unsigned nsegs) __attribute__((weak,visibility("protected")));
+struct file_metadata *__alloc_file_metadata(unsigned nsegs)
+{
+	size_t meta_sz = offsetof(struct file_metadata, segments)
+		+ nsegs * sizeof (struct segment_metadata);
+	void *meta = __private_malloc(meta_sz);
+	if (!meta) abort();
+	bzero(meta, meta_sz);
+	return meta;
+}
+
+int __reopen_file(const char *filename) __attribute__((weak,visibility("protected")));
+int __reopen_file(const char *filename)
+{
+	return open(filename, O_RDONLY);
 }
 
 struct lm_pair *lookup_by_addr(void *addr)
@@ -115,7 +137,8 @@ static struct file_metadata *metadata_for_addr(void *addr)
 	struct lm_pair *p = lookup_by_addr(addr);
 	return p ? p->fm : NULL;
 }
-struct file_metadata *__runt_files_metadata_by_addr(void *addr)
+struct file_metadata *(__attribute__((warning("do not call __runt_files_metadata_by_addr from files.c")))
+ __runt_files_metadata_by_addr)(void *addr)
 {
 	if (!initialized) __runt_files_init();
 	return metadata_for_addr(addr);
@@ -130,7 +153,7 @@ struct segments
 };
 static int discover_segments_cb(struct dl_phdr_info *info, size_t size, void *segments_as_void);
 
-void __runt_files_notify_load(void *handle, const void *load_site);
+struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site);
 
 void __runt_files_init(void) __attribute__((constructor(102)));
 void __runt_files_init(void)
@@ -138,89 +161,31 @@ void __runt_files_init(void)
 	if (!initialized && !trying_to_initialize)
 	{
 		trying_to_initialize = 1;
-#if 0
-		/* Initialize what we depend on. */
-		__mmap_allocator_init();
-#endif
 		__runt_auxv_init();
+		/* Snapshot the early libs. This is basically whatever was
+		 * loaded by the dynamic linker at start-up. */
+		init_early_libs();
+
 		/* FIXME: arguably, for dynamically linked programs, the allocation
-		 * site of these is somewhere inside the dynamic linker. E.g.
+		 * site of files is somewhere inside the dynamic linker. E.g.
 		 * if the linker was run by the kernel's loader (and not by directly
 		 * running the linker on the command line, e.g.
 		 * /path/to/ld.so /path/to/executable) it should be _dl_start, else
 		 * it should be wherever in the dynamic linker did the load. We can
 		 * distinguish all these cases, and should do.... */
-#if 1
 		const void *program_entry_point = __runt_auxv_get_program_entry_point();
-#else
-		char dummy;
-		ElfW(auxv_t) *auxv = get_auxv(environ, &dummy);
-		assert(auxv);
-		ElfW(auxv_t) *entry_auxv = auxv_lookup(auxv, AT_ENTRY);
-		const void *program_entry_point = (const void *) entry_auxv->a_un.a_val;
-#endif
 
 		/* We probably don't need to iterate over all DSOs -- those that have been
 		 * dlopened by us since execution started (e.g. the dlbind lib)
 		 * were already notified/added earlier. So we only iterate
 		 * over those we snapshotted. But if we *haven't* run dlopen
 		 * at all yet, just iterate over everything. */
-		if (early_lib_handles[0])
+		assert(early_lib_handles[0]);
+		for (unsigned i = 0; i < MAX_EARLY_LIBS; ++i)
 		{
-			for (unsigned i = 0; i < MAX_EARLY_LIBS; ++i)
-			{
-				if (!early_lib_handles[i]) break;
-				__runt_files_notify_load(early_lib_handles[i],
-					program_entry_point);
-			}
-		}
-		else
-		{
-			for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
-			{
-				__runt_files_notify_load(l, program_entry_point);
-			}
-		}
-		/* For all loaded objects... */
-		if (__librunt_debug_level >= 10)
-		{
-			for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
-			{
-				/* l_addr isn't guaranteed to be mapped, so use _DYNAMIC a.k.a. l_ld'*/
-				void *query_addr = l->l_ld;
-#if 0
-				struct big_allocation *containing_mapping =__lookup_bigalloc_top_level(query_addr);
-				struct big_allocation *containing_file = __lookup_bigalloc_under(
-					query_addr, &__static_file_allocator, containing_mapping, NULL);
-				assert(containing_file);
-#endif
-				struct file_metadata *file = 
-#if 0
-						containing_file->meta.un.opaque_data.data_ptr;	
-#else
-					metadata_for_addr((void*) l->l_addr);
-#endif
-				for (unsigned i_seg = 0; i_seg < file->nload; ++i_seg)
-				{
-					union sym_or_reloc_rec *metavector = file->segments[i_seg].metavector;
-					size_t metavector_size = file->segments[i_seg].metavector_size;
-#if 0
-					// we print the whole metavector
-					for (unsigned i = 0; i < metavector_size / sizeof *metavector; ++i)
-					{
-						fprintf(stream_err, "At %016lx there is a static alloc of kind %u, idx %08u, type %s\n",
-							file->l->l_addr + vaddr_from_rec(&metavector[i], file),
-							(unsigned) (metavector[i].is_reloc ? REC_RELOC : metavector[i].sym.kind),
-							(unsigned) (metavector[i].is_reloc ? 0 : metavector[i].sym.idx),
-							UNIQTYPE_NAME(
-								metavector[i].is_reloc ? NULL :
-								(struct uniqtype *)(((uintptr_t) metavector[i].sym.uniqtype_ptr_bits_no_lowbits)<<3)
-							)
-						);
-					}
-#endif
-				}
-			}
+			if (!early_lib_handles[i]) break;
+			__wrap___runt_files_notify_load(early_lib_handles[i],
+				program_entry_point);
 		}
 		initialized = 1;
 		trying_to_initialize = 0;
@@ -284,7 +249,14 @@ static void *get_or_map_file_range(struct file_metadata *file,
 	return NULL;
 }
 
-void __runt_files_notify_load(void *handle, const void *load_site)
+/* IMPORTANT: don't call this directly. We want to be able to wrap it.
+ * But we call it from this file; that won't be wrapped unless we
+ * ensure it's called on an undefined symbol. So when building a DSO
+ * containing this file, we must --defsym __wrap___runt_files_notify_load=__runt_files_notify_load.
+ * FIXME: can I use the .gnu.warning magic to generate a warning if this
+ * file calls directly to __runt_files_notify_load? */
+struct file_metadata *(__attribute__((warning("do not call __runt_files_notify_load from files.c"))) __runt_files_notify_load)
+	(void *handle, const void *load_site)
 {
 	struct link_map *l = (struct link_map *) handle;
 	const char *tmp = dynobj_name_from_dlpi_name(l->l_name,
@@ -295,14 +267,7 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	 * this pointer into the file_metadata struct later, whose deallocator will
 	 * free it. */
 	const char *dynobj_name = __private_strdup(tmp);
-	debug_printf(1, "notified of load of object %s\n", dynobj_name);
-#if 0
-	/* Load the separate meta-object for this object. */
-	void *meta_obj_handle = NULL;
-	int ret_meta = dl_for_one_object_phdrs(handle,
-		load_and_init_all_metadata_for_one_object, &meta_obj_handle);
-#endif
-	// meta_obj_handle may be null -- we continue either way
+	debug_printf(1, "librunt notified of load of object %s\n", dynobj_name);
 	/* Look up the mapping sequence for this file. Note that
 	 * although a file is notionally sparse, modern glibc's ld.so
 	 * does ensure that it is spanned by a contiguous sequence of
@@ -314,40 +279,18 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	 * SUBTLETY: this contiguous sequence does not start at the
 	 * load address -- it starts at the first LOAD's base vaddr.
 	 * See the hack in mmap.c. */
-#if 0
-	struct big_allocation *lowest_containing_mapping_bigalloc = NULL;
-	struct mapping_entry *m = __liballocs_get_memory_mapping(
-		(void*) (l->l_addr + bounds.lowest_mapped_vaddr),
-		&lowest_containing_mapping_bigalloc);
-	struct big_allocation *highest_containing_mapping_bigalloc = NULL;
-	m = __liballocs_get_memory_mapping(
-		(void*) (l->l_addr + bounds.limit_vaddr - 1),
-		&highest_containing_mapping_bigalloc);
-	/* We should have seen the mmap that created the bigalloc. If we haven't,
-	 * it probably means that we haven't turned on systrapping yet. That's
-	 * a logic error in liballocs; we should have done that by now. */
-	if (!lowest_containing_mapping_bigalloc) abort();
-	if (!highest_containing_mapping_bigalloc) abort();
-	if (highest_containing_mapping_bigalloc != lowest_containing_mapping_bigalloc) abort();
-	struct big_allocation *containing_mapping_bigalloc = lowest_containing_mapping_bigalloc;
-	size_t file_bigalloc_size = (uintptr_t)((char*) l->l_addr + bounds.limit_vaddr)
-		- (uintptr_t) lowest_containing_mapping_bigalloc->begin;
-#endif
 	struct segments sinfo = (struct segments) { .nload = 0 };
 	dl_for_one_object_phdrs(l, discover_segments_cb, &sinfo);
 	assert(sinfo.nload != 0);
-	size_t meta_sz = offsetof(struct file_metadata, segments)
-		+ sinfo.nload * sizeof (struct segment_metadata);
-	struct file_metadata *meta = __private_malloc(meta_sz);
-	if (!meta) abort();
-	bzero(meta, meta_sz);
+	/* PROBLEM: clients like liballocs want to extend this structure.
+	 * So we should let them.
+	 * We've already abstracted the insert and delete functions.
+	 * How to abstract allocation? */
+	struct file_metadata *meta = __alloc_file_metadata(sinfo.nload);
+	assert(meta);
 	meta->load_site = load_site;
 	meta->filename = dynobj_name;
 	meta->l = l;
-#if 0
-	meta->meta_obj_handle = meta_obj_handle;
-	meta->extrasym = (meta_obj_handle ? dlsym(meta_obj_handle, "extrasym") : NULL);
-#endif
 	meta->phdrs = (ElfW(Phdr) *) sinfo.phdrs;
 	meta->phnum = sinfo.phnum;
 	meta->nload = sinfo.nload;
@@ -365,40 +308,7 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 		}
 	}
 	/* We still haven't filled in everything... */
-	insert_pair(l, meta);
-#if 0
-	/* We want to create a single "big allocation" for the whole file. 
-	 * However, that's a problem ta least in the case of executables
-	 * mapped by the kernel: there isn't a single mapping sequence. We
-	 * fixed that in allocators/mmap.c: if we detect a hole, we map
-	 * it PROT_NONE, and ensure the rules on extending mapping_sequences
-	 * will swallow this into the same sequence. */
-	struct big_allocation *b = __liballocs_new_bigalloc(
-		(void*) lowest_containing_mapping_bigalloc->begin, // the file begins at a page boundary
-		file_bigalloc_size,
-		(struct meta_info) {
-			.what = DATA_PTR,
-			.un = {
-				opaque_data: { 
-					.data_ptr = (void*) meta,
-					.free_func = &free_file_metadata
-				}
-			}
-		},
-		containing_mapping_bigalloc,
-		&__static_file_allocator
-	);
-	b->suballocator = &__static_segment_allocator;
-	char dummy;
-	ElfW(auxv_t) *auxv = get_auxv(environ, &dummy);
-	assert(auxv);
-	ElfW(auxv_t) *ph_auxv = auxv_lookup(auxv, AT_PHDR);
-	if (FILE_META_DESCRIBES_EXECUTABLE(meta))
-	{
-		assert(!executable_file_bigalloc);
-		executable_file_bigalloc = b;
-	}
-#endif
+	__insert_file_metadata(l, meta);
 	/* The only semi-portable way to get phdrs is to iterate over
 	 * *all* the phdrs. But we only want to process a single file's
 	 * phdrs now. Our callback must do the test. */
@@ -418,11 +328,9 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	/* Now we have the most file metadata we can get without re-mapping extra
 	 * parts of the file. */
 	/* FIXME: we'd much rather not do open() on l->l_name (race condition) --
-	 * if we had the original fd that was exec'd, that would be great. */
-#if 0
-	int fd = raw_open(meta->filename, O_RDONLY);
-#endif
-	int fd = open(meta->filename, O_RDONLY);
+	 * if we had the original fd that was exec'd, that would be great. If we
+	 * were in a libgerald- */
+	int fd = __reopen_file(meta->filename);
 	if (fd < 0)
 	{
 		// warn, at a debug level that depends on whether the path looks sane
@@ -487,12 +395,10 @@ void __runt_files_notify_load(void *handle, const void *load_site)
 	out:
 		if (fd >= 0) close(fd);
 	}
-#if 0
-	init_allocsites_info(meta);
-	init_frames_info(meta);
-#endif
+	return meta;
 }
-static void free_file_metadata(void *fm)
+void __runt_deinit_file_metadata(void *fm) __attribute__((visibility("protected")));
+void __runt_deinit_file_metadata(void *fm)
 {
 	struct file_metadata *meta = (struct file_metadata *) fm;
 	__private_free((void*) meta->filename);
@@ -504,7 +410,6 @@ static void free_file_metadata(void *fm)
 				meta->extra_mappings[i].size);
 		}
 	}
-	__private_free(meta);
 }
 
 static int discover_segments_cb(struct dl_phdr_info *info, size_t size, void *segments_as_void)
@@ -541,33 +446,24 @@ static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *inf
 	}
 	return 1;
 }
-
+/* FIXME: would be better if our dlclose hook gave us more than
+ * just a filename. But what can it give us? We only know that
+ * the ld.so really does the unload *after* it's happened, when
+ * the structures have been removed. There is also a danger of
+ * races here. */
 void __runt_files_notify_unload(const char *copied_filename)
 {
 	if (initialized)
 	{
 		assert(copied_filename);
-#if 0
-		/* For all big allocations, if we're the allocator and the filename matches, 
-		 * delete them. */
-		for (struct big_allocation *b = &big_allocations[0]; b != &big_allocations[NBIGALLOCS]; ++b)
+		for (struct lm_pair *p = &lm_pairs[0]; p < &lm_pairs[npairs]; ++p)
 		{
-			if (BIGALLOC_IN_USE(b) && b->allocated_by == &__static_file_allocator)
+			if (!(p->lm)) break;
+			if (0 == strcmp(p->fm->filename, copied_filename))
 			{
-				struct file_metadata *meta = (struct file_metadata *) b->meta.un.opaque_data.data_ptr;
-				if (0 == strcmp(copied_filename, meta->filename))
-				{
-					/* unload meta-object */
-					dlclose(meta->meta_obj_handle);
-					/* It's a match, so delete. FIXME: don't match by name (fragile);
-					 * load addr is better */
-					__liballocs_delete_bigalloc_at(b->begin, &__static_file_allocator);
-				}
+				__delete_file_metadata(&p->fm);
 			}
 		}
-#else
-		// FIXME: free the file metadata
-#endif
 	}
 }
 
@@ -588,7 +484,7 @@ __runt_find_section_boundary(
 	 * the ELF spec does not require that (as far as I can see).
 	 * It doesn't seem worth caching a sorted representation of
 	 * the section headers. */
-	struct file_metadata *fm = __runt_files_metadata_by_addr(search_addr);
+	struct file_metadata *fm = __wrap___runt_files_metadata_by_addr(search_addr);
 	if (!fm) return backwards ? NULL : (void*)-1;
 	uintptr_t vaddr = (uintptr_t) search_addr - fm->l->l_addr;
 	ElfW(Shdr) *best = NULL;

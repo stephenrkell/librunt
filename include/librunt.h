@@ -32,7 +32,6 @@ struct link_map *__runt_files_lookup_by_addr(void *addr) __attribute__((visibili
 struct file_metadata;
 struct file_metadata *__runt_files_metadata_by_addr(void *addr) __attribute__((visibility("protected")));
 
-extern void *__top_of_initial_stack __attribute__((visibility("protected")));
 extern rlim_t __stack_lim_cur __attribute__((visibility("protected")));
 
 void __runt_auxv_init(void) __attribute__((visibility("protected")));
@@ -48,5 +47,17 @@ void __runt_files_init(void) __attribute__((visibility("protected")));
 void __runt_segments_init(void) __attribute__((visibility("protected")));
 void __runt_sections_init(void) __attribute__((visibility("protected")));
 void __runt_symbols_init(void) __attribute__((visibility("protected")));
+
+extern const char *__auxv_asciiz_start __attribute__((visibility("protected")));
+extern const char *__auxv_asciiz_end __attribute__((visibility("protected")));
+extern const char **__env_vector_start __attribute__((visibility("protected")));
+extern const char **__env_vector_terminator __attribute__((visibility("protected")));
+extern const char **__argv_vector_start __attribute__((visibility("protected")));
+extern const char **__argv_vector_terminator __attribute__((visibility("protected")));
+extern ElfW(auxv_t) *__auxv_array_start __attribute__((visibility("protected")));
+extern ElfW(auxv_t) *__auxv_array_terminator __attribute__((visibility("protected")));
+extern intptr_t *__auxv_program_argcountp __attribute__((visibility("protected")));
+extern void *__program_entry_point __attribute__((visibility("protected")));
+extern void *__top_of_initial_stack __attribute__((visibility("protected")));
 
 #endif
