@@ -137,7 +137,7 @@ static struct file_metadata *metadata_for_addr(void *addr)
 	struct lm_pair *p = lookup_by_addr(addr);
 	return p ? p->fm : NULL;
 }
-struct file_metadata *(__attribute__((warning("do not call __runt_files_metadata_by_addr from files.c")))
+struct file_metadata *(__attribute__((warning("do not call __runt_files_metadata_by_addr from files.c; use __wrap_*")))
  __runt_files_metadata_by_addr)(void *addr)
 {
 	if (!initialized) __runt_files_init();
@@ -255,8 +255,8 @@ static void *get_or_map_file_range(struct file_metadata *file,
  * containing this file, we must --defsym __wrap___runt_files_notify_load=__runt_files_notify_load.
  * FIXME: can I use the .gnu.warning magic to generate a warning if this
  * file calls directly to __runt_files_notify_load? */
-struct file_metadata *(__attribute__((warning("do not call __runt_files_notify_load from files.c"))) __runt_files_notify_load)
-	(void *handle, const void *load_site)
+struct file_metadata *(__attribute__((warning("do not call __runt_files_notify_load from files.c; use __wrap_*")))
+	__runt_files_notify_load)(void *handle, const void *load_site)
 {
 	struct link_map *l = (struct link_map *) handle;
 	const char *tmp = dynobj_name_from_dlpi_name(l->l_name,
