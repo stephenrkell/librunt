@@ -959,7 +959,7 @@ void *fake_dlsym(void *handle, const char *symname)
 	 * "this one". */
 
 	struct LINK_MAP_STRUCT_TAG *ourselves = NULL;
-	
+	if (handle == RTLD_NEXT) assert(_DYNAMIC);
 	for (struct LINK_MAP_STRUCT_TAG *l = _r_debug.r_map;
 			l;
 			l = l->l_next)
