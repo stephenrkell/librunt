@@ -73,37 +73,12 @@ checkrun-%:
 		(tail -n20 $$err; false)
 
 # disabled cases
-checkrun-plugin-hello:
-	true # disabled plugin-hello while expected to fail
-checkrun-lib-test:
-	true # currently fails, see https://github.com/stephenrkell/liballocs/issues/38
+# (none right now)
 # Some cases are special and require only an exit status of zero
-checkrun-stack-walk:
-	$(MAKE) cleanrun-stack-walk >/dev/null 2>&1
-checkrun-no-unbind-self:
-	$(MAKE) cleanrun-no-unbind-self >/dev/null 2>&1
-checkrun-sloppy-dumptypes:
-	$(MAKE) cleanrun-sloppy-dumptypes >/dev/null 2>&1
-checkrun-section-group:
-	$(MAKE) cleanrun-section-group >/dev/null 2>&1
-checkrun-simple-multi-alloc:
-	$(MAKE) cleanrun-simple-multi-alloc >/dev/null 2>&1
-checkrun-simple-client:
-	$(MAKE) cleanrun-simple-client >/dev/null 2>&1
-checkrun-nopreload-alloca:
-	$(MAKE) cleanrun-nopreload-alloca >/dev/null 2>&1
 checkrun-relf-auxv-dynamic:
 	$(MAKE) cleanrun-relf-auxv-dynamic >/dev/null 2>&1
 checkrun-relf-auxv-static:
-	true #$(MAKE) cleanrun-relf-auxv-static >/dev/null 2>&1
-checkrun-uniqtype-make-precise:
-	$(MAKE) cleanrun-uniqtype-make-precise >/dev/null 2>&1
-# checkrun-lib-test:
-# 	$(MAKE) cleanrun-lib-test >/dev/null 2>&1
-checkrun-forward-decls:
-	$(MAKE) cleanrun-forward-decls >/dev/null 2>&1
-checkrun-metavec-layout:
-	$(MAKE) cleanrun-metavec-layout >/dev/null 2>&1
+	$(MAKE) cleanrun-relf-auxv-static >/dev/null 2>&1
 
 # run logic
 
