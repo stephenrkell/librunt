@@ -20,44 +20,50 @@ typedef struct {
 #include <link.h>
 #include <assert.h>
 
+#ifdef IN_LIBRUNT_DSO
+#define PROTECTED __attribute__((visibility("protected")))
+#else
+#define PROTECTED
+#endif
+
 /* We define a dladdr that caches stuff. */
-Dl_info dladdr_with_cache(const void *addr) __attribute__((visibility("protected")));
+Dl_info dladdr_with_cache(const void *addr) PROTECTED;
 struct dl_phdr_info;
 int dl_for_one_object_phdrs(void *handle,
 	int (*callback) (struct dl_phdr_info *info, size_t size, void *data),
-	void *data) __attribute__((visibility("protected")));
+	void *data) PROTECTED;
 const char *dynobj_name_from_dlpi_name(const char *dlpi_name,
-	void *dlpi_addr) __attribute__((visibility("protected")));
-struct link_map *__runt_files_lookup_by_addr(void *addr) __attribute__((visibility("protected")));
+	void *dlpi_addr) PROTECTED;
+struct link_map *__runt_files_lookup_by_addr(void *addr) PROTECTED;
 struct file_metadata;
-struct file_metadata *__runt_files_metadata_by_addr(void *addr) __attribute__((visibility("protected")));
+struct file_metadata *__runt_files_metadata_by_addr(void *addr) PROTECTED;
 
-extern rlim_t __stack_lim_cur __attribute__((visibility("protected")));
+extern rlim_t __stack_lim_cur PROTECTED;
 
-void __runt_auxv_init(void) __attribute__((visibility("protected")));
-_Bool __runt_auxv_get_asciiz(const char **out_start, const char **out_end) __attribute__((visibility("protected")));
-_Bool __runt_auxv_get_argv(const char ***out_start, const char ***out_terminator) __attribute__((visibility("protected")));
-_Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator) __attribute__((visibility("protected")));
-_Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator) __attribute__((visibility("protected")));
-void *__runt_auxv_get_program_entry_point(void) __attribute__((visibility("protected")));
+void __runt_auxv_init(void) PROTECTED;
+_Bool __runt_auxv_get_asciiz(const char **out_start, const char **out_end) PROTECTED;
+_Bool __runt_auxv_get_argv(const char ***out_start, const char ***out_terminator) PROTECTED;
+_Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator) PROTECTED;
+_Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator) PROTECTED;
+void *__runt_auxv_get_program_entry_point(void) PROTECTED;
 
-void *__runt_tls_block_base(void) __attribute__((visibility("protected")));
+void *__runt_tls_block_base(void) PROTECTED;
 
-void __runt_files_init(void) __attribute__((visibility("protected")));
-void __runt_segments_init(void) __attribute__((visibility("protected")));
-void __runt_sections_init(void) __attribute__((visibility("protected")));
-void __runt_symbols_init(void) __attribute__((visibility("protected")));
+void __runt_files_init(void) PROTECTED;
+void __runt_segments_init(void) PROTECTED;
+void __runt_sections_init(void) PROTECTED;
+void __runt_symbols_init(void) PROTECTED;
 
-extern const char *__auxv_asciiz_start __attribute__((visibility("protected")));
-extern const char *__auxv_asciiz_end __attribute__((visibility("protected")));
-extern const char **__env_vector_start __attribute__((visibility("protected")));
-extern const char **__env_vector_terminator __attribute__((visibility("protected")));
-extern const char **__argv_vector_start __attribute__((visibility("protected")));
-extern const char **__argv_vector_terminator __attribute__((visibility("protected")));
-extern ElfW(auxv_t) *__auxv_array_start __attribute__((visibility("protected")));
-extern ElfW(auxv_t) *__auxv_array_terminator __attribute__((visibility("protected")));
-extern intptr_t *__auxv_program_argcountp __attribute__((visibility("protected")));
-extern void *__program_entry_point __attribute__((visibility("protected")));
-extern void *__top_of_initial_stack __attribute__((visibility("protected")));
+extern const char *__auxv_asciiz_start PROTECTED;
+extern const char *__auxv_asciiz_end PROTECTED;
+extern const char **__env_vector_start PROTECTED;
+extern const char **__env_vector_terminator PROTECTED;
+extern const char **__argv_vector_start PROTECTED;
+extern const char **__argv_vector_terminator PROTECTED;
+extern ElfW(auxv_t) *__auxv_array_start PROTECTED;
+extern ElfW(auxv_t) *__auxv_array_terminator PROTECTED;
+extern intptr_t *__auxv_program_argcountp PROTECTED;
+extern void *__program_entry_point PROTECTED;
+extern void *__top_of_initial_stack PROTECTED;
 
 #endif

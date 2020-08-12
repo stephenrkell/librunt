@@ -3,6 +3,8 @@ LIBRUNT := $(realpath $(dir $(THIS_MAKEFILE))/..)
 SRCROOT := $(dir $(THIS_MAKEFILE))../
 srcdir := $(SRCROOT)/src
 
+CFLAGS += -DIN_LIBRUNT_DSO
+
 CFLAGS += -std=gnu11 -fPIC -Wall -Wextra -g
 CFLAGS += -I../include -I$(SRCROOT)/include -I$(LIBMALLOCHOOKS) \
    -I$(LIBSYSTRAP) -I$(LIBRUNT)/include -I$(LIBDLBIND)/include -I$(srcdir) -Wno-unused
