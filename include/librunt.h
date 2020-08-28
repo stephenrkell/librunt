@@ -26,6 +26,7 @@ typedef struct {
 #define PROTECTED
 #endif
 
+extern const char __ldso_name[] PROTECTED;
 /* We define a dladdr that caches stuff. */
 Dl_info dladdr_with_cache(const void *addr) PROTECTED;
 struct dl_phdr_info;

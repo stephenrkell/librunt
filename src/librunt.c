@@ -55,7 +55,7 @@ char *get_exe_basename(void)
 	else return NULL;
 }
 
-const char __ldso_name[] = "/lib64/ld-linux-x86-64.so.2"; // FIXME: sysdep
+const char __ldso_name[] __attribute__((visibility("protected"))) = "/lib64/ld-linux-x86-64.so.2"; // FIXME: sysdep
 FILE *stream_err __attribute__((visibility("hidden")));
 
 int __librunt_debug_level;
