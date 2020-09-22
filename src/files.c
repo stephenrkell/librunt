@@ -202,8 +202,9 @@ static void *get_or_map_file_range(struct file_metadata *file,
 		ElfW(Phdr) *phdr = &file->phdrs[i];
 		if (phdr->p_type == PT_LOAD)
 		{
+			ElfW(Addr) real_end = ROUND_UP(phdr->p_offset + phdr->p_filesz, MIN_PAGE_SIZE);
 			if (phdr->p_offset <= (ElfW(Off)) offset &&
-					phdr->p_offset + phdr->p_filesz >= offset + length)
+					real_end >= offset + length)
 			{
 				// we can just return the address within that phdr
 				return (char*) file->l->l_addr + phdr->p_vaddr +
