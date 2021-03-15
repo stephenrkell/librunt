@@ -65,7 +65,15 @@ void *dlopen(const char *filename, int flag)
 				// cf. glibc eld/dl-load.c:_dl_map_object
 				// HACK: For now just do a quick search on fixed known system library paths
 				// This is non portable!!
-				const char *library_sys_paths[] = { "/lib/", "/usr/lib/", "/lib/x86_64-linux-gnu/", "/usr/lib/x86_64-linux-gnu/", NULL };
+				const char *library_sys_paths[] = { "/lib/", "/usr/lib/",
+#if defined(__x86_64__)
+						"/lib/x86_64-linux-gnu/", "/usr/lib/x86_64-linux-gnu/",
+#elif defined(__i386__)
+						"/lib/i386-linux-gnu/", "/usr/lib/i386-linux-gnu/",
+#else
+#error "Unrecognised platform"
+#endif
+						NULL };
 				char libfullpath[4096];
 				for (const char **libsyspath = library_sys_paths ; !file_realname_raw && *libsyspath ; ++libsyspath)
 				{

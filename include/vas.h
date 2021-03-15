@@ -4,7 +4,10 @@
 #define MINIMUM_USER_ADDRESS  ((char*)0x400000) /* FIXME: less {x86-64,GNU/Linux}-specific please */
 #define MAXIMUM_USER_ADDRESS  ((char*)(0x800000000000ul-1)) /* FIXME: less {x86-64,GNU/Linux}-specific please */
 
+#ifndef WORD_BITSIZE
 #define WORD_BITSIZE ((sizeof (void*))<<3)
+#endif
+
 #if defined(__x86_64__) || defined(x86_64)
 #define ADDR_BITSIZE 48
 #else

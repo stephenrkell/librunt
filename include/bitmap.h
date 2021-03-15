@@ -5,9 +5,21 @@
 // want a truly word-sized integer... let's use uintptr_t for now
 #include <stdint.h>
 #include "bitops.h"
+#include "elfw.h"
+
+#ifndef WORD_BITSIZE
+#define WORD_BITSIZE ((sizeof (void*))<<3)
+#endif
 
 typedef uintptr_t bitmap_word_t;
 #define BITMAP_WORD_NBITS (8*sizeof(bitmap_word_t))
+
+_Static_assert(BITMAP_WORD_NBITS == WORD_BITSIZE, "bitmap word size is platform word size");
+_Static_assert(BITMAP_WORD_NBITS == ELF_WORD_BITSIZE, "bitmap word size is ELF word size");
+
+#define popcount_y_(n) popcount ## n
+#define popcount_x_(n) popcount_y_(n)
+#define popcount_word popcount_x_(ELF_WORD_BITSIZE)
 
 /* We define both "big-endian" and "little-endian" *bit* orders.
  * These are intended for bitmaps whose elements denote bytes.
@@ -252,8 +264,7 @@ static inline unsigned long bitmap_count_set_l(bitmap_word_t *p_bitmap, bitmap_w
 	unsigned long count = 0;
 	while (p_startword != p_endword)
 	{
-		unsigned long long word; // make it 64 bits so we can use popcount64
-		// (FIXME: not on 32-bit platforms )
+		bitmap_word_t word;
 		if (start_idx_ge)
 		{
 			// only count the higher-addressed (most-significant) 
@@ -261,14 +272,14 @@ static inline unsigned long bitmap_count_set_l(bitmap_word_t *p_bitmap, bitmap_w
 			// bits.
 			word = (*p_startword) >> (BITMAP_WORD_NBITS - start_idx_ge);
 		} else word = *p_startword;
-		count += popcount64(word);
+		count += popcount_word(word);
 		++p_startword;
 		start_idx_ge = 0; // start from the beginning of the next word
 	}
 	// now just handle the last word. BEWARE: start_idx_ge may still be nonzero,
 	// if our first word and last words are the same.
 	// create a bitmask in which only bits [start_idx_ge, end_idx_lt) are set.
-	unsigned long long word;
+	bitmap_word_t word;
 	unsigned nbits = end_idx_lt - start_idx_ge;
 	if (nbits < BITMAP_WORD_NBITS)
 	{
@@ -281,7 +292,7 @@ static inline unsigned long bitmap_count_set_l(bitmap_word_t *p_bitmap, bitmap_w
 			;
 		word = *p_startword & bitmask;
 	} else word = *p_startword;
-	count += popcount64(word);
+	count += popcount_word(word);
 	return count;
 }
 

@@ -83,7 +83,7 @@ _Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator)
 	return 1;
 }
 
-_Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator)
+_Bool __runt_auxv_get_auxv(const ElfW(auxv_t) **out_start, ElfW(auxv_t) **out_terminator)
 {
 	if (out_start) *out_start = __auxv_array_start;
 	if (out_terminator) *out_terminator = __auxv_array_terminator;

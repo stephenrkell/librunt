@@ -26,7 +26,7 @@ void __runt_sections_init(void)
 }
 struct section_metadata
 {
-	const Elf64_Shdr *shdr; /* should *not* be null; we don't create dummy sections */
+	const ElfW(Shdr) *shdr; /* should *not* be null; we don't create dummy sections */
 };
 
 void __runt_sections_notify_define_section(
