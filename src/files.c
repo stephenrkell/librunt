@@ -200,7 +200,19 @@ static void *get_or_map_file_range(struct file_metadata *file,
 	for (unsigned i = 0; i < file->phnum; ++i)
 	{
 		ElfW(Phdr) *phdr = &file->phdrs[i];
-		if (phdr->p_type == PT_LOAD)
+		/* Conservatively we can only permit non-writable LOADs here,
+		 * because file and memory may have diverged. A common culprit
+		 * is copy relocs... copy-relocatable data might be placed in a
+		 * region of the file that overlaps the mapped section headers,
+		 * say (seen in a Debian build of xterm 312-2). This is because
+		 * copy-relocated data only requires "uninitialized memory" --
+		 * unlike both BSS (where we want fresh-mapped zeroes) and
+		 * local rodata or initialized data from the file (where we'd want
+		 * to map that data, so by definition wouldn't allocate it where
+		 * the memory mapping would be containing random other stuff like
+		 * section headers).
+		 */
+		if (phdr->p_type == PT_LOAD && !(phdr->p_flags & PF_W))
 		{
 			ElfW(Addr) real_end = ROUND_UP(phdr->p_offset + phdr->p_filesz, MIN_PAGE_SIZE);
 			if (phdr->p_offset <= (ElfW(Off)) offset &&
@@ -214,6 +226,7 @@ static void *get_or_map_file_range(struct file_metadata *file,
 	}
 	/* Without an fd (e.g. for the vdso) we can only return existing mappings. */
 	if (fd == -1) return NULL;
+	/* Now we can try making a fresh mapping. But maybe an existing one will do. */
 	unsigned midx = 0;
 	for (; midx < MAPPING_MAX; ++midx)
 	{
