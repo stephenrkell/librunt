@@ -45,7 +45,7 @@ void __runt_auxv_init(void) PROTECTED;
 _Bool __runt_auxv_get_asciiz(const char **out_start, const char **out_end) PROTECTED;
 _Bool __runt_auxv_get_argv(const char ***out_start, const char ***out_terminator) PROTECTED;
 _Bool __runt_auxv_get_env(const char ***out_start, const char ***out_terminator) PROTECTED;
-_Bool __runt_auxv_get_auxv(const Elf64_auxv_t **out_start, Elf64_auxv_t **out_terminator) PROTECTED;
+_Bool __runt_auxv_get_auxv(const ElfW(auxv_t) **out_start, ElfW(auxv_t) **out_terminator) PROTECTED;
 void *__runt_auxv_get_program_entry_point(void) PROTECTED;
 
 void *__runt_tls_block_base(void) PROTECTED;

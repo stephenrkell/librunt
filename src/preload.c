@@ -65,7 +65,15 @@ void *dlopen(const char *filename, int flag)
 				// cf. glibc eld/dl-load.c:_dl_map_object
 				// HACK: For now just do a quick search on fixed known system library paths
 				// This is non portable!!
-				const char *library_sys_paths[] = { "/lib/", "/usr/lib/", "/lib/x86_64-linux-gnu/", "/usr/lib/x86_64-linux-gnu/", NULL };
+				const char *library_sys_paths[] = { "/lib/", "/usr/lib/",
+#if defined(__x86_64__)
+						"/lib/x86_64-linux-gnu/", "/usr/lib/x86_64-linux-gnu/",
+#elif defined(__i386__)
+						"/lib/i386-linux-gnu/", "/usr/lib/i386-linux-gnu/",
+#else
+#error "Unrecognised platform"
+#endif
+						NULL };
 				char libfullpath[4096];
 				for (const char **libsyspath = library_sys_paths ; !file_realname_raw && *libsyspath ; ++libsyspath)
 				{
@@ -318,20 +326,17 @@ int dl_iterate_phdr(
 	// write_string("Blah8\n");
 	static int(*orig_dl_iterate_phdr)(int (*) (struct dl_phdr_info *info,
 		size_t size, void *data), void*);
-	
+	if (!orig_dl_iterate_phdr)
+	{
+		// write_string("Blah11\n");
+		orig_dl_iterate_phdr = fake_dlsym(RTLD_NEXT, "dl_iterate_phdr");
+		// write_string("Blah12\n");
+	}
+
 	_Bool we_set_flag = 0;
 	if (!__avoid_libdl_calls) { we_set_flag = 1; __avoid_libdl_calls = 1; }
 	// write_string("Blah9\n");
 	
-	if (!orig_dl_iterate_phdr)
-	{
-		// write_string("Blah10\n");
-		if (__avoid_libdl_calls && !we_set_flag) abort();
-		// write_string("Blah11\n");
-		orig_dl_iterate_phdr = fake_dlsym(RTLD_NEXT, "dl_iterate_phdr");
-		// write_string("Blah12\n");
-		if (!orig_dl_iterate_phdr) abort();
-	}
 	// write_string("Blah13\n");
 	struct link_map *l = get_highest_loaded_object_below(__builtin_return_address(0));
 	// write_string("Blah13.5\n");

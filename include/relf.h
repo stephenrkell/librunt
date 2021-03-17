@@ -9,6 +9,7 @@ typedef bool _Bool;
 #include <stddef.h> /* for offsetof */
 #include <stdint.h>
 #include <elf.h>
+#include "elfw.h"
 #include "vas.h" /* hmm -- may pollute namespace, but see how we go */
 #ifdef __FreeBSD__
 /* FreeBSD is POSIXly-correct by avoiding the typename "auxv_t". 
@@ -48,9 +49,6 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
 
 */
 
-#ifndef ElfW
-#define ElfW(t) Elf64_ ## t
-#endif
 
 #ifndef LINK_MAP_STRUCT_TAG
 #define LINK_MAP_STRUCT_TAG link_map
@@ -444,7 +442,7 @@ static inline
 unsigned long
 elf64_hash(const unsigned char *name)
 {
-	unsigned long h = 0, g;
+	uint64_t h = 0, g;
 	while (*name)
 	{
 		h = (h << 4) + *name++;
@@ -454,6 +452,23 @@ elf64_hash(const unsigned char *name)
 	return h;
 }
 
+/* Straight from the System V GABI spec v4.1 */
+static inline 
+unsigned long
+elf32_hash(const unsigned char *name)
+{
+	uint32_t h = 0, g;
+	while (*name)
+	{
+		h = (h << 4) + *name++;
+		if (0 != (g = (h & 0xf0000000)))
+		{
+			h ^= g >> 24;
+		}
+		h &= ~g;
+	}
+	return h;
+}
 static inline 
 struct R_DEBUG_STRUCT_TAG *find_r_debug(void)
 {
@@ -599,7 +614,7 @@ ElfW(Sym) *hash_lookup(ElfW(Word) *hash, ElfW(Sym) *symtab, const unsigned char 
 	ElfW(Word) (*buckets)[/*nbucket*/] = (ElfW(Word)(*)[]) &hash[2];
 	ElfW(Word) (*chains)[/*nchain*/] = (ElfW(Word)(*)[]) &hash[2 + nbucket];
 
-	unsigned long h = elf64_hash((const unsigned char *) sym);
+	unsigned long h = elfw(hash)((const unsigned char *) sym);
 	ElfW(Word) first_symind = (*buckets)[h % nbucket];
 	ElfW(Word) symind = first_symind;
 	for (; symind != STN_UNDEF; symind = (*chains)[symind])
@@ -935,7 +950,7 @@ void *sym_to_addr(ElfW(Sym) *sym)
 {
 	if (!sym) return NULL;
 	/* HACK for ifunc */
-	if (ELF64_ST_TYPE(sym->st_info) == STT_GNU_IFUNC)
+	if (ELFW_ST_TYPE(sym->st_info) == STT_GNU_IFUNC)
 	{
 		void *(*ifunc)(void) = (void*(*)(void)) LOAD_ADDR_FIXUP(sym->st_value, sym);
 		return ifunc();
