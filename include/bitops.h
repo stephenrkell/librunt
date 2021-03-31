@@ -126,7 +126,7 @@ static inline int nlz64(uint64_t x)
 static inline int nlo64(uint64_t x) { return nlz64(~x); }
 
 // same but zero bytes, not bits
-static inline int nlzb64(unsigned long x)
+static inline int nlzb64(uint64_t x)
 {
 	int n;
 

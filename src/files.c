@@ -292,7 +292,15 @@ struct file_metadata *(__attribute__((warning("do not call __runt_files_notify_l
 	 * probably just not support that case.
 	 * SUBTLETY: this contiguous sequence does not start at the
 	 * load address -- it starts at the first LOAD's base vaddr.
-	 * See the hack in mmap.c. */
+	 * See the hack in liballocs's mmap.c.
+	 *
+	 * FIXME: instead of relying on dl_iterate_phdr, we may want to
+	 * provide it (polyfill-style). That means we need to hoist the
+	 * calls to get_or_map_file_range that grab the ELF header and
+	 * the program headers. Once we have those, we can provide
+	 * a phdr iteration... discover_segments_cb must use that instead.
+	 * CAREFUL of circularities: what does get_or_map_file_range assume?
+	 */
 	struct segments sinfo = (struct segments) { .nload = 0 };
 	dl_for_one_object_phdrs(l, discover_segments_cb, &sinfo);
 	assert(sinfo.nload != 0);

@@ -173,7 +173,7 @@ static inline unsigned long bitmap_rfind_first_set_leq_l(bitmap_word_t *p_bitmap
  */
 static inline unsigned long bitmap_find_first_set1_geq_l(bitmap_word_t *p_bitmap, bitmap_word_t *p_limit, unsigned long start_idx, unsigned long *out_test_bit)
 {
-	unsigned long *p_base = p_bitmap;
+	bitmap_word_t *p_base = p_bitmap;
 	p_bitmap += start_idx / BITMAP_WORD_NBITS;
 	start_idx %= BITMAP_WORD_NBITS;
 	if (p_bitmap >= p_limit) return (unsigned long) -1;

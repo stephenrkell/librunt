@@ -27,9 +27,19 @@ typedef Elf64_Auxinfo Elf64_auxv_t;
 int strncmp(const char *s1, const char *s2, size_t n);
 #undef strcmp
 int strcmp(const char *s1, const char *s2);
-extern void 
-__assert_fail (const char *assertion, const char *file,
-	unsigned int line, const char *function) __attribute__((__noreturn__));
+#if __STDC_VERSION__ >= 201112L
+_Noreturn
+#endif
+extern void
+__assert_fail (
+#if 0
+const char *assertion, const char *file,
+#ifdef __musl__
+	unsigned
+#endif
+        int line, const char *function
+#endif
+) __attribute__((__noreturn__));
 extern char **environ;
 extern void abort(void) __attribute__((noreturn));
 
@@ -811,9 +821,12 @@ static inline
 ElfW(Sym) *hash_lookup_local(const char *sym)
 {
 	ElfW(Word) *hash = (ElfW(Word) *) local_dynamic_xlookup(DT_HASH)->d_un.d_ptr;
-	if ((intptr_t) hash < 0) return NULL; // HACK: x86-64 vdso workaround
 	unsigned long local_base = (unsigned long) get_local_load_addr();
-	if ((unsigned long) hash < local_base) return NULL; // HACK: x86-64 vdso workaround
+	if ((unsigned long) hash < local_base)
+	{
+		// FIXME: really want to print a warning here
+		return NULL; // HACK: x86-64 vdso workaround
+	}
 	ElfW(Sym) *symtab = (ElfW(Sym) *) local_dynamic_xlookup(DT_SYMTAB)->d_un.d_ptr;
 	const unsigned char *strtab = (const unsigned char *) local_dynamic_xlookup(DT_STRTAB)->d_un.d_ptr;
 	return hash_lookup(hash, symtab, strtab, sym);
@@ -823,9 +836,12 @@ static inline
 ElfW(Sym) *gnu_hash_lookup_local(const char *sym)
 {
 	ElfW(Word) *hash = (ElfW(Word) *) local_dynamic_xlookup(DT_GNU_HASH)->d_un.d_ptr;
-	if ((intptr_t) hash < 0) return NULL; // HACK: x86-64 vdso workaround
 	unsigned long local_base = (unsigned long) get_local_load_addr();
-	if ((unsigned long) hash < local_base) return NULL; // HACK: x86-64 vdso workaround
+	if ((unsigned long) hash < local_base)
+	{
+		// FIXME: really want to print a warning here
+		return NULL; // HACK: x86-64 vdso workaround
+	}
 	ElfW(Sym) *symtab = (ElfW(Sym) *) local_dynamic_xlookup(DT_SYMTAB)->d_un.d_ptr;
 	const unsigned char *strtab = (const unsigned char *) local_dynamic_xlookup(DT_STRTAB)->d_un.d_ptr;
 	return gnu_hash_lookup(hash, symtab, strtab, sym);
@@ -874,9 +890,7 @@ static inline
 ElfW(Sym) *symbol_lookup_linear_local(const char *sym)
 {
 	ElfW(Sym) *symtab = (ElfW(Sym) *) local_dynamic_xlookup(DT_SYMTAB)->d_un.d_ptr;
-	if ((intptr_t) symtab < 0) return NULL; // HACK: x86-64 vdso workaround
 	const unsigned char *strtab = (const unsigned char *) local_dynamic_xlookup(DT_STRTAB)->d_un.d_ptr;
-	if ((intptr_t) strtab < 0) return NULL; // HACK: x86-64 vdso workaround
 	const unsigned char *strtab_end = strtab + local_dynamic_xlookup(DT_STRSZ)->d_un.d_val;
 	/* Nasty hack: assume dynstr follows dynsym. */
 	/* Round down to the alignment of ElfW(Sym). */
@@ -888,8 +902,11 @@ static inline
 ElfW(Sym) *get_dynsym(struct LINK_MAP_STRUCT_TAG *l)
 {
 	ElfW(Sym) *symtab = (ElfW(Sym) *) dynamic_xlookup(l->l_ld, DT_SYMTAB)->d_un.d_ptr;
-	if ((intptr_t) symtab < 0) return 0; // HACK: x86-64 vdso workaround
-	if (symtab && (uintptr_t) symtab < l->l_addr) return 0; // HACK: x86-64 vdso workaround
+	if (symtab && (uintptr_t) symtab < l->l_addr)
+	{
+		// FIXME: really want to print a warning here
+		return 0; // HACK: x86-64 vdso workaround
+	}
 	return symtab;
 }
 static inline
@@ -897,8 +914,11 @@ ElfW(Word) *get_gnu_hash(struct LINK_MAP_STRUCT_TAG *l)
 {
 	ElfW(Dyn) *gnu_hash_ent = dynamic_lookup(l->l_ld, DT_GNU_HASH);
 	ElfW(Word) *gnu_hash = gnu_hash_ent ? (ElfW(Word) *) gnu_hash_ent->d_un.d_ptr : NULL;
-	if ((intptr_t) gnu_hash < 0) return 0; // HACK: x86-64 vdso workaround
-	if (gnu_hash && (uintptr_t) gnu_hash < l->l_addr) return 0; // HACK: x86-64 vdso workaround
+	if (gnu_hash && (uintptr_t) gnu_hash < l->l_addr)
+	{
+		// FIXME: really want to print a warning here
+		return 0; // HACK: x86-64 vdso workaround
+	}
 	return gnu_hash;
 }
 static inline
@@ -906,16 +926,22 @@ ElfW(Word) *get_sysv_hash(struct LINK_MAP_STRUCT_TAG *l)
 {
 	ElfW(Dyn) *hash_ent = dynamic_lookup(l->l_ld, DT_HASH);
 	ElfW(Word) *hash = hash_ent ? (ElfW(Word) *) hash_ent->d_un.d_ptr : NULL;
-	if ((intptr_t) hash < 0) return 0; // HACK: x86-64 vdso workaround
-	if (hash && (uintptr_t) hash < l->l_addr) return 0; // HACK: x86-64 vdso workaround
+	if (hash && (uintptr_t) hash < l->l_addr)
+	{
+		// FIXME: really want to print a warning here
+		return 0; // HACK: x86-64 vdso workaround
+	}
 	return hash;
 }
 static inline
 unsigned char *get_dynstr(struct LINK_MAP_STRUCT_TAG *l)
 {
 	unsigned char *strtab = (unsigned char *) dynamic_xlookup(l->l_ld, DT_STRTAB)->d_un.d_ptr;
-	if ((intptr_t) strtab < 0) return 0; // HACK: x86-64 vdso workaround
-	if (strtab && (uintptr_t) strtab < l->l_addr) return 0; // HACK: x86-64 vdso workaround
+	if (strtab && (uintptr_t) strtab < l->l_addr)
+	{
+		// FIXME: really want to print a warning here
+		return 0; // HACK: x86-64 vdso workaround
+	}
 	return strtab;
 }
 

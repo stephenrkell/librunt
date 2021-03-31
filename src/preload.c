@@ -232,11 +232,26 @@ void *dlsym(void *handle, const char *symbol)
 			our_dlerror = "symbol not found";
 			orig_dlsym = NULL;
 		}
+		/* We're in trouble if fake dlsym can't find the real dlsym...
+		 * this is part of our bootstrapping strategy. What's goign on?
+		 * Maybe we need a fake dlvsym to find these? */
 		if (!orig_dlsym) abort();
 	}
 	
 	void *ret = orig_dlsym(handle, symbol);
 	if (we_set_flag) __avoid_libdl_calls = 0;
+	return ret;
+}
+void *__runt_dlsym(void *handle, const char *symbol) __attribute__((alias("dlsym")));
+
+void *__runt_fake_dlsym(void *handle, const char *symbol)
+{
+	void *ret = fake_dlsym(handle, symbol);
+	if (ret == (void*) -1)
+	{
+		our_dlerror = "fake dlsym failed";
+		ret = NULL;
+	}
 	return ret;
 }
 
@@ -329,8 +344,13 @@ int dl_iterate_phdr(
 	if (!orig_dl_iterate_phdr)
 	{
 		// write_string("Blah11\n");
-		orig_dl_iterate_phdr = fake_dlsym(RTLD_NEXT, "dl_iterate_phdr");
-		// write_string("Blah12\n");
+		orig_dl_iterate_phdr = /*fake_*/dlsym(RTLD_NEXT, "dl_iterate_phdr");
+		//if (orig_dl_iterate_phdr == (void*) -1)
+		//{
+		//	our_dlerror = "symbol not found";
+		//	orig_dl_iterate_phdr = NULL;
+		//}
+		assert(orig_dl_iterate_phdr);
 	}
 
 	_Bool we_set_flag = 0;

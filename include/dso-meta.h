@@ -133,7 +133,7 @@ void __runt_sections_notify_define_section(
 		T *upper = base + n; \
 		T *lower = base; \
 		if (upper - lower == 0) abort(); \
-		assert(proj(lower) <= target_proj_val); \
+		if (proj(lower) > target_proj_val) return NULL; \
 		while (upper - lower != 1) \
 		{ \
 			T *mid = lower + ((upper - lower) / 2); \

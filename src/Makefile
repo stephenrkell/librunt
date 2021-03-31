@@ -71,8 +71,10 @@ LDFLAGS += -Wl,-O2 -flto -Bsymbolic-functions -fPIC
 
 # different outputs involve different subgroups of objects
 UTIL_OBJS :=
+UNWIND_MACHINE ?= $(shell arch="$$( gcc -print-multiarch | sed 's/-.*//' )"; \
+  case "$$arch" in (i386) echo "x86";; (*) echo "$$arch";; esac )
 ifneq ($(USE_REAL_LIBUNWIND),)
-LDLIBS += -lunwind -lunwind-`uname -m`
+LDLIBS += -lunwind -lunwind-$(UNWIND_MACHINE)
 CFLAGS += -DUSE_REAL_LIBUNWIND
 else
 CFLAGS += -fno-omit-frame-pointer
@@ -148,7 +150,7 @@ librunt.a: $(LIBRUNT_A_OBJS)
 
 ifeq ($(USE_FAKE_LIBUNWIND),)
 FAKE_LIBUNWIND_OBJ :=
-LIBUNWIND_LDLIBS := -lunwind -lunwind-$(shell uname -m)
+LIBUNWIND_LDLIBS := -lunwind -lunwind-$(UNWIND_MACHINE)
 else
 FAKE_LIBUNWIND_OBJ := fake-libunwind.o
 CFLAGS += -fno-omit-frame-pointer

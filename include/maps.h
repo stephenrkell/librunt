@@ -147,23 +147,32 @@ static inline ssize_t get_a_line_from_maps_fd(char *buf, size_t size, intptr_t h
 	int fd = (int) handle;
 	// read some stuff, at most `size - 1' bytes (we're going to add a null), into the buffer
 	ssize_t bytes_read = read(fd, buf, size - 1);
-	// if we got EOF and read zero bytes, return -1
-	if (bytes_read == 0) return -1;
+	// if we read nothing, return -1
+	if (bytes_read <= 0) return -1;
 	// did we get enough that we have a whole line?
 	char *found = memchr(buf, '\n', bytes_read);
 	// if so, rewind the file to just after the newline
 	if (found)
 	{
-		size_t end_of_newline_displacement = (found - buf) + 1;
-		(void) lseek(fd,
-				end_of_newline_displacement - bytes_read /* i.e. negative if we read more */,
+		ssize_t end_of_newline_displacement = (found - buf) + 1;
+		/* HACK: we are effecively doing *signed* arithmetic with an
+		 * off_t here, which is of unsigned type. Make sure we use the
+		 * full width of the off_t, so that wraparound happens where we
+		 * expect it. FIXME: I guess this means lseek() isn't supposed
+		 * to support negative offsets from SEEK_CUR? */
+		off_t new_off = lseek(fd,
+				((off_t) -bytes_read) + (off_t) end_of_newline_displacement /* i.e. negative if we read more */,
 				SEEK_CUR);
+		// seek should succeed
+		if (new_off == (off_t) -1) abort();
+		// replace newline with null; caller can strncpy
 		buf[end_of_newline_displacement] = '\0';
+		// distance to just past the newline is the #bytes read
 		return end_of_newline_displacement;
 	}
 	else
 	{
-		/* We didn't read enough. But that should only be because of EOF of error.
+		/* We didn't read enough. But that should only be because of EOF or error.
 		 * So just return whatever we got. */
 		buf[bytes_read] = '\0';
 		return -1;
@@ -250,7 +259,11 @@ static inline int process_one_maps_entry(char *linebuf, struct maps_entry *entry
 		&entry_buf->first, &entry_buf->second, &entry_buf->r, &entry_buf->w, &entry_buf->x, 
 		&entry_buf->p, &entry_buf->offset, &entry_buf->devmaj, &entry_buf->devmin, 
 		&entry_buf->inode, entry_buf->rest);
-
+	// to help debugging, print the bad line
+	if (fields_read < (NUM_FIELDS-1))
+	{
+		write(2, linebuf, strlen(linebuf)+1);
+	}
 	assert(fields_read >= (NUM_FIELDS-1)); // we might not get a "rest"
 	#undef NUM_FIELDS
 #endif
