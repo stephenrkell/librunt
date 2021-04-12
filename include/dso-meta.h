@@ -54,7 +54,7 @@ struct file_metadata
 	struct extra_mapping
 	{
 		void *mapping_pagealigned;
-		off_t fileoff_pagealigned;
+		size_t fileoff_pagealigned; // avoid off_t to be glibc/musl-agnostic
 		size_t size;
 	} extra_mappings[MAPPING_MAX];
 
