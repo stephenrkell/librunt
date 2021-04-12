@@ -72,6 +72,17 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
 #define R_DEBUG_MAKE_ENUMERATOR(p) p
 #endif
 
+/* This is a giant HACK that is needed only because we might be reading
+ * _DYNAMIC entries before or after they get relocated by ADJUST_DYN_INFO.
+ * 
+ * This logic only works on objects whose load address (high_base_addr)
+ * is greater than their maximum vaddr. This is usually true, but BEWARE... */
+#define RELF_MAYBE_ADJUST(x, high_base_addr) ( \
+   (((uintptr_t)(x)) < ((uintptr_t)(high_base_addr))) ? \
+       (((uintptr_t)(high_base_addr))+((uintptr_t)(x)))  \
+     : ((uintptr_t)(x)) \
+)
+
 #ifdef RELF_DEFINE_STRUCTURES
 struct LINK_MAP_STRUCT_TAG
 {
@@ -104,6 +115,8 @@ struct R_DEBUG_STRUCT_TAG
 #endif
 
 extern ElfW(Dyn) _DYNAMIC[] __attribute__((weak));
+extern void _fini __attribute__((weak));
+extern void _init __attribute__((weak));
 extern struct R_DEBUG_STRUCT_TAG _r_debug __attribute__((weak));
 
 static inline
@@ -133,7 +146,7 @@ unsigned char *get_dynstr(struct LINK_MAP_STRUCT_TAG *l);
  * declaring it 'const' causes too many headaches, because char**
  * cannot be implicitly converted to 'const char **'. */
 static inline
-ElfW(auxv_t) *get_auxv_via_environ(char **environ, void *stackptr)
+ElfW(auxv_t) *get_auxv_via_environ(char **environ, void *stackptr, void *stack_upper_bound)
 {
 	/* This somewhat unsound but vaguely portable mechanism for getting auxv
 	 * works as follows.
@@ -151,11 +164,7 @@ ElfW(auxv_t) *get_auxv_via_environ(char **environ, void *stackptr)
 	 *   at a *higher* base address (sometimes the vdso gets loaded here),
 	 *   and use its load address as an upper bound
 	 */
-	struct LINK_MAP_STRUCT_TAG *found = get_lowest_loaded_object_above(stackptr);
-	void *stack_upper_bound;
-	if (found) stack_upper_bound = (void*) found->l_addr;
-	else stack_upper_bound = (void*) -1;
-	
+
 	for (char **p_str = &environ[0]; *p_str; ++p_str)
 	{
 		if (*p_str > (const char*) stackptr && *p_str < (const char *) stack_upper_bound)
@@ -258,7 +267,11 @@ ElfW(auxv_t) *auxv_lookup(ElfW(auxv_t) *a, ElfW(Addr) tag)
 static inline
 ElfW(auxv_t) *get_auxv(char **environ, void *stackptr)
 {
-	return get_auxv_via_environ(environ, stackptr);
+	struct LINK_MAP_STRUCT_TAG *found = get_lowest_loaded_object_above(stackptr);
+	void *stack_upper_bound;
+	if (found) stack_upper_bound = (void*) found->l_addr;
+	else stack_upper_bound = (void*) -1;
+	return get_auxv_via_environ(environ, stackptr, stack_upper_bound);
 }
 
 extern void *__libc_stack_end __attribute__((weak));
@@ -479,6 +492,48 @@ elf32_hash(const unsigned char *name)
 	}
 	return h;
 }
+static inline
+uintptr_t guess_load_addr_early(void)
+{
+	/* We want a way to get our load address, including early i.e. before
+	 * ADJUST_DYN_INFO has happened (but usually after bootstrap relocation).
+	 *
+	 * The current object's load address is... &DYNAMIC minus the value of
+	 * the _DYNAMIC symbol. But we can't get at our own dynsym unless we
+	 * already know our own load addr, or at least unless our own _DYNAMIC
+	 * has already been ADJUST_DYN_INFO'd (which we don't want to assume).
+	 *
+	 * If only _DYNAMIC pointed at something we could get the address of.
+	 * (Like itself!)
+	 * Some such entities are: (from  readelf -d hello | egrep '0x[0-9a-f]{3,}$' | tr -s '[:blank:]' '\t' | cut -f4,
+	 * then grep readelf -s)
+	 *
+		__init_array_end
+		__init_array_start
+		_GLOBAL_OFFSET_TABLE_
+		_init
+		_fini
+	 *
+	 * ... but not all binaries will have all of these. _init and _fini seem
+	 * like the most reliable.
+	 */
+	for (ElfW(Dyn) *d = &_DYNAMIC[0]; d->d_tag != DT_NULL; ++d)
+	{
+		if (d->d_tag == DT_FINI && &_fini)
+		{
+			uintptr_t load_addr = (uintptr_t) &_fini - d->d_un.d_ptr;
+			// might be 0! but if so, ADJUST_DYN_INFO has happened
+			return load_addr;
+		}
+		if (d->d_tag == DT_INIT && &_init)
+		{
+			uintptr_t load_addr = (uintptr_t) &_init - d->d_un.d_ptr;
+			// might be 0! but if so, ADJUST_DYN_INFO has happened
+			return load_addr;
+		}
+	}
+	return (uintptr_t) -1;
+}
 static inline 
 struct R_DEBUG_STRUCT_TAG *find_r_debug(void)
 {
@@ -497,7 +552,23 @@ struct R_DEBUG_STRUCT_TAG *find_r_debug(void)
 // 		}
 // 		__assert_fail("found r_debug", __FILE__, __LINE__, __func__);
 // 	}
-	return &_r_debug;
+	if (&_r_debug) return &_r_debug;
+	/* Here we are assuming that local reference works. */
+	ElfW(Dyn) *found = &_DYNAMIC ? dynamic_lookup(_DYNAMIC, DT_DEBUG) : NULL;
+	if (found)
+	{
+		/* HACK: we need our own load address if we're to do RELF_MAYBE_ADJUST.
+		 * How can we get it? */
+		uintptr_t guessed_load_addr = guess_load_addr_early();
+		if (guessed_load_addr == (uintptr_t) -1)
+		{
+			// This means we didn't find a symbol we could use to infer the load addr.
+			// Not much we can do! Zero makes RELF_MAYBE_ADJUST a no-op.
+			guessed_load_addr = 0;
+		}
+		return (struct R_DEBUG_STRUCT_TAG *) RELF_MAYBE_ADJUST(found->d_un.d_ptr, guessed_load_addr);
+	}
+	return NULL;
 }
 static inline
 struct LINK_MAP_STRUCT_TAG*
@@ -547,9 +618,8 @@ static inline void *get_local_text_segment_end(void)
 	char *our_load_addr = (char*) get_local_load_addr();
 	uintptr_t etext_value = (uintptr_t) &_etext;
 	// MONSTER HACK: sometimes _etext references are relocated, others not.
-	// FIXME: understand this.
-	if (etext_value > (uintptr_t) our_load_addr) return (char*) etext_value;
-	else return our_load_addr + etext_value;
+	// FIXME: understand this
+	return (void*) RELF_MAYBE_ADJUST(etext_value, our_load_addr);
 }
 
 // HACK: not actually possible in general, because we use phdrs
@@ -587,9 +657,56 @@ void *find_ldso_base(char **environ, void *stackptr)
 		 * get a copy reloc. If we use a text symbol we'll get a PLT entry. Getting
 		 * an address that is genu-winely in the ld.so, via a public interface, is hard. */
 		
-		ldso_base = (void*) _r_debug.r_ldbase;
+		ldso_base = (void*) find_r_debug()->r_ldbase;
 	}
 	return ldso_base;
+}
+
+static inline
+ElfW(Sym) *get_dynsym_from_dyn(ElfW(Dyn) *d, uintptr_t load_addr)
+{
+	ElfW(Addr) a = dynamic_xlookup(d, DT_SYMTAB)->d_un.d_ptr;
+	return a ? (ElfW(Sym) *) RELF_MAYBE_ADJUST(a, load_addr) : NULL;
+}
+static inline
+ElfW(Sym) *get_dynsym(struct LINK_MAP_STRUCT_TAG *l)
+{
+	return get_dynsym_from_dyn(l->l_ld, l->l_addr);
+}
+static inline
+ElfW(Word) *get_gnu_hash_from_dyn(ElfW(Dyn) *d, uintptr_t load_addr)
+{
+	ElfW(Dyn) *gnu_hash_ent = dynamic_lookup(d, DT_GNU_HASH);
+	ElfW(Word) *gnu_hash = gnu_hash_ent ? (ElfW(Word) *) RELF_MAYBE_ADJUST(gnu_hash_ent->d_un.d_ptr, load_addr) : NULL;
+	return gnu_hash;
+}
+static inline
+ElfW(Word) *get_gnu_hash(struct LINK_MAP_STRUCT_TAG *l)
+{
+	return get_gnu_hash_from_dyn(l->l_ld, l->l_addr);
+}
+static inline
+ElfW(Word) *get_sysv_hash_from_dyn(ElfW(Dyn) *d, uintptr_t load_addr)
+{
+	ElfW(Dyn) *hash_ent = dynamic_lookup(d, DT_HASH);
+	ElfW(Word) *hash = hash_ent ? (ElfW(Word) *) RELF_MAYBE_ADJUST(hash_ent->d_un.d_ptr, load_addr) : NULL;
+	return hash;
+}
+static inline
+ElfW(Word) *get_sysv_hash(struct LINK_MAP_STRUCT_TAG *l)
+{
+	return get_sysv_hash_from_dyn(l->l_ld, l->l_addr);
+}
+static inline
+unsigned char *get_dynstr_from_dyn(ElfW(Dyn) *d, uintptr_t load_addr)
+{
+	unsigned char *strtab = (unsigned char *) RELF_MAYBE_ADJUST(dynamic_xlookup(d, DT_STRTAB)->d_un.d_ptr, load_addr);
+	return strtab;
+}
+static inline
+unsigned char *get_dynstr(struct LINK_MAP_STRUCT_TAG *l)
+{
+	return get_dynstr_from_dyn(l->l_ld, l->l_addr);
 }
 
 static inline
@@ -604,14 +721,19 @@ unsigned long dynamic_symbol_count_fast(ElfW(Sym) *dynsym, unsigned char *dynstr
 	return ((unsigned char *) dynstr - (unsigned char *) dynsym) / sizeof (ElfW(Sym));
 }
 static inline
-unsigned long dynamic_symbol_count(ElfW(Dyn) *dyn, struct LINK_MAP_STRUCT_TAG *l)
+unsigned long dynamic_symbol_count_from_dyn(ElfW(Dyn) *dyn, uintptr_t load_addr)
 {
 	ElfW(Dyn) *dynstr_ent = NULL;
-	ElfW(Word) *hash = get_sysv_hash(l);
+	ElfW(Word) *hash = get_sysv_hash_from_dyn(dyn, load_addr);
 	if (hash) return dynamic_symbol_count_fast(NULL, NULL, hash);
-	ElfW(Sym) *dynsym = get_dynsym(l);
-	unsigned char *dynstr = get_dynstr(l);
+	ElfW(Sym) *dynsym = get_dynsym_from_dyn(dyn, load_addr);
+	unsigned char *dynstr = get_dynstr_from_dyn(dyn, load_addr);
 	return dynamic_symbol_count_fast(dynsym, dynstr, hash);
+}
+static inline
+unsigned long dynamic_symbol_count(ElfW(Dyn) *dyn /* unused */, struct LINK_MAP_STRUCT_TAG *l)
+{
+	return dynamic_symbol_count_from_dyn(l->l_ld, l->l_addr);
 }
 
 static inline
@@ -899,62 +1021,15 @@ ElfW(Sym) *symbol_lookup_linear_local(const char *sym)
 }
 
 static inline
-ElfW(Sym) *get_dynsym(struct LINK_MAP_STRUCT_TAG *l)
+ElfW(Sym) *symbol_lookup_in_dyn(ElfW(Dyn) *d, uintptr_t load_addr, const char *sym)
 {
-	ElfW(Sym) *symtab = (ElfW(Sym) *) dynamic_xlookup(l->l_ld, DT_SYMTAB)->d_un.d_ptr;
-	if (symtab && (uintptr_t) symtab < l->l_addr)
-	{
-		// FIXME: really want to print a warning here
-		return 0; // HACK: x86-64 vdso workaround
-	}
-	return symtab;
-}
-static inline
-ElfW(Word) *get_gnu_hash(struct LINK_MAP_STRUCT_TAG *l)
-{
-	ElfW(Dyn) *gnu_hash_ent = dynamic_lookup(l->l_ld, DT_GNU_HASH);
-	ElfW(Word) *gnu_hash = gnu_hash_ent ? (ElfW(Word) *) gnu_hash_ent->d_un.d_ptr : NULL;
-	if (gnu_hash && (uintptr_t) gnu_hash < l->l_addr)
-	{
-		// FIXME: really want to print a warning here
-		return 0; // HACK: x86-64 vdso workaround
-	}
-	return gnu_hash;
-}
-static inline
-ElfW(Word) *get_sysv_hash(struct LINK_MAP_STRUCT_TAG *l)
-{
-	ElfW(Dyn) *hash_ent = dynamic_lookup(l->l_ld, DT_HASH);
-	ElfW(Word) *hash = hash_ent ? (ElfW(Word) *) hash_ent->d_un.d_ptr : NULL;
-	if (hash && (uintptr_t) hash < l->l_addr)
-	{
-		// FIXME: really want to print a warning here
-		return 0; // HACK: x86-64 vdso workaround
-	}
-	return hash;
-}
-static inline
-unsigned char *get_dynstr(struct LINK_MAP_STRUCT_TAG *l)
-{
-	unsigned char *strtab = (unsigned char *) dynamic_xlookup(l->l_ld, DT_STRTAB)->d_un.d_ptr;
-	if (strtab && (uintptr_t) strtab < l->l_addr)
-	{
-		// FIXME: really want to print a warning here
-		return 0; // HACK: x86-64 vdso workaround
-	}
-	return strtab;
-}
-
-static inline
-ElfW(Sym) *symbol_lookup_in_object(struct LINK_MAP_STRUCT_TAG *l, const char *sym)
-{
-	ElfW(Word) *hash = get_sysv_hash(l);
-	ElfW(Word) *gnu_hash = get_gnu_hash(l);
-	ElfW(Sym) *symtab = get_dynsym(l);
+	ElfW(Word) *hash = get_sysv_hash_from_dyn(d, load_addr);
+	ElfW(Word) *gnu_hash = get_gnu_hash_from_dyn(d, load_addr);
+	ElfW(Sym) *symtab = get_dynsym_from_dyn(d, load_addr);
 	if (!symtab) return 0;
-	ElfW(Sym) *symtab_end = symtab + dynamic_symbol_count(l->l_ld, l);
-	unsigned char *strtab = get_dynstr(l);
-	unsigned char *strtab_end = strtab + dynamic_xlookup(l->l_ld, DT_STRSZ)->d_un.d_val;
+	ElfW(Sym) *symtab_end = symtab + dynamic_symbol_count_from_dyn(d, load_addr);
+	unsigned char *strtab = get_dynstr_from_dyn(d, load_addr);
+	unsigned char *strtab_end = strtab + dynamic_xlookup(d, DT_STRSZ)->d_un.d_val;
 
 	/* Try the GNU hash lookup, if we can. Or else try SvsV hash.
 	 * If we found no hash table of either kind, try linear. */
@@ -964,6 +1039,13 @@ ElfW(Sym) *symbol_lookup_in_object(struct LINK_MAP_STRUCT_TAG *l, const char *sy
 	else found = symbol_lookup_linear(symtab, symtab_end, strtab, strtab_end, sym);
 	return found;
 }
+
+static inline
+ElfW(Sym) *symbol_lookup_in_object(struct LINK_MAP_STRUCT_TAG *l, const char *sym)
+{
+	return symbol_lookup_in_dyn(l->l_ld, l->l_addr, sym);
+}
+
 
 /* preserve NULLs */
 #define LOAD_ADDR_FIXUP_IN_OBJ(l, p) \
@@ -1001,7 +1083,7 @@ void *fake_dlsym(void *handle, const char *symname)
 
 	struct LINK_MAP_STRUCT_TAG *ourselves = NULL;
 	if (handle == RTLD_NEXT) assert(_DYNAMIC);
-	for (struct LINK_MAP_STRUCT_TAG *l = _r_debug.r_map;
+	for (struct LINK_MAP_STRUCT_TAG *l = find_r_debug()->r_map;
 			l;
 			l = l->l_next)
 	{
