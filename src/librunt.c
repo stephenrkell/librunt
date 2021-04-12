@@ -120,7 +120,7 @@ void init_early_libs(void)
 	 * want todouble-process any files that were already notified
 	 * (below) because they were opened with our dlopen wrapper. */
 	unsigned idx = 0;
-	for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
+	for (struct link_map *l = find_r_debug()->r_map; l; l = l->l_next)
 	{
 		if (idx == MAX_EARLY_LIBS) abort();
 		early_lib_handles[idx++] = l;

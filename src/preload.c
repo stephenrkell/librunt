@@ -90,7 +90,7 @@ void *dlopen(const char *filename, int flag)
 			else goto skip_load;
 		}
 		const char *file_realname = __private_strdup(file_realname_raw);
-		for (struct link_map *l = _r_debug.r_map; l; l = l->l_next)
+		for (struct link_map *l = find_r_debug()->r_map; l; l = l->l_next)
 		{
 			const char *lm_ent_realname = dynobj_name_from_dlpi_name(l->l_name, (void*) l->l_addr);
 			file_already_loaded |= (lm_ent_realname && 
