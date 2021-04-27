@@ -115,8 +115,8 @@ struct R_DEBUG_STRUCT_TAG
 #endif
 
 extern ElfW(Dyn) _DYNAMIC[] __attribute__((weak));
-extern void _fini __attribute__((weak));
-extern void _init __attribute__((weak));
+extern int _fini __attribute__((weak));
+extern int _init __attribute__((weak));
 extern struct R_DEBUG_STRUCT_TAG _r_debug __attribute__((weak));
 
 static inline
@@ -723,7 +723,6 @@ unsigned long dynamic_symbol_count_fast(ElfW(Sym) *dynsym, unsigned char *dynstr
 static inline
 unsigned long dynamic_symbol_count_from_dyn(ElfW(Dyn) *dyn, uintptr_t load_addr)
 {
-	ElfW(Dyn) *dynstr_ent = NULL;
 	ElfW(Word) *hash = get_sysv_hash_from_dyn(dyn, load_addr);
 	if (hash) return dynamic_symbol_count_fast(NULL, NULL, hash);
 	ElfW(Sym) *dynsym = get_dynsym_from_dyn(dyn, load_addr);
@@ -1130,7 +1129,6 @@ int walk_symbols_in_object(struct LINK_MAP_STRUCT_TAG *l,
 	ElfW(Sym) *symtab = get_dynsym(l);
 	if (!symtab) return 0;
 	
-	ElfW(Dyn) *gnu_hash_ent = dynamic_lookup(l->l_ld, DT_GNU_HASH);
 	ElfW(Word) *gnu_hash = get_gnu_hash(l);
 	if (gnu_hash) return gnu_hash_walk_syms(gnu_hash, cb, symtab, arg);
 	
@@ -1187,6 +1185,38 @@ int fake_dladdr(void *addr, const char **out_fname, void **out_fbase, const char
 		if (out_saddr) *out_saddr = sym_to_addr(args.out_found_sym);
 	}
 	return success; /* i.e. "return 0 on error", like dladdr */
+}
+
+static inline uintptr_t
+find_section_boundary(
+	uintptr_t vaddr,
+	ElfW(Word) flags,
+	_Bool backwards,
+	ElfW(Shdr) *shdrs,
+	unsigned nshdr,
+	unsigned *out_shndx)
+{
+	ElfW(Shdr) *best = NULL;
+	ptrdiff_t best_diff = PTRDIFF_MAX;
+	for (ElfW(Shdr) *cur = shdrs;
+			cur != shdrs + nshdr;
+			++cur)
+	{
+		// is cur closer than 'best'?
+		if (!(cur->sh_flags & flags)) continue;
+		// the forward or backward distance from search_addr to cur's boundary
+		ptrdiff_t cur_diff = 
+			backwards ? (intptr_t) vaddr - (cur->sh_addr + cur->sh_size)
+			          : (intptr_t) cur->sh_addr - vaddr;
+		// if the diff is <0, it means we're on the wrong side of the boundary
+		if (cur_diff < 0) continue;
+		// i.e. we want the smallest positive distance
+		if (cur_diff < best_diff)
+		{ best = cur; best_diff = cur_diff; continue; }
+	}
+	if (!best) return backwards ? 0 : (uintptr_t)-1;
+	if (out_shndx) *out_shndx = (best - shdrs);
+	return (backwards ? (best->sh_addr + best->sh_size) : best->sh_addr);
 }
 
 #ifdef __cplusplus

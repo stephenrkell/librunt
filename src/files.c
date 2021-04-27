@@ -237,8 +237,8 @@ static void *get_or_map_file_range(struct file_metadata *file,
 			break;
 		}
 		if (m->mapping_pagealigned
-			&& m->fileoff_pagealigned <= offset
-			&& m->fileoff_pagealigned + m->size >= offset + length)
+			&& (unsigned long) m->fileoff_pagealigned <= (unsigned long) offset
+			&& (unsigned long) m->fileoff_pagealigned + m->size >= (unsigned long) offset + length)
 		{
 			return m->mapping_pagealigned + (offset - m->fileoff_pagealigned);
 		}
@@ -509,27 +509,9 @@ __runt_find_section_boundary(
 	struct file_metadata *fm = __wrap___runt_files_metadata_by_addr(search_addr);
 	if (!fm) return backwards ? NULL : (void*)-1;
 	uintptr_t vaddr = (uintptr_t) search_addr - fm->l->l_addr;
-	ElfW(Shdr) *best = NULL;
-	ptrdiff_t best_diff = PTRDIFF_MAX;
-	for (ElfW(Shdr) *cur = fm->shdrs;
-			cur != fm->shdrs + fm->ehdr->e_shnum;
-			++cur)
-	{
-		// is cur closer than 'best'?
-		if (!(cur->sh_flags & flags)) continue;
-		// the forward or backward distance from search_addr to cur's boundary
-		ptrdiff_t cur_diff = 
-			backwards ? (intptr_t) vaddr - (cur->sh_addr + cur->sh_size)
-			          : (intptr_t) cur->sh_addr - vaddr;
-		// if the diff is <0, it means we're on the wrong side of the boundary
-		if (cur_diff < 0) continue;
-		// i.e. we want the smallest positive distance
-		if (cur_diff < best_diff)
-		{ best = cur; best_diff = cur_diff; continue; }
-	}
-	if (!best) return backwards ? NULL : (void*)-1;
+	uintptr_t ret = find_section_boundary(vaddr, flags, backwards, fm->shdrs, fm->ehdr->e_shnum,
+		out_shndx);
+	if (!ret || ret == (uintptr_t)-1) return (void*) ret;
 	if (out_fm) *out_fm = fm;
-	if (out_shndx) *out_shndx = (best - fm->shdrs);
-	return (const void*) (fm->l->l_addr +
-		(backwards ? (best->sh_addr + best->sh_size) : best->sh_addr));
+	return (const void*) (fm->l->l_addr + ret);
 }
