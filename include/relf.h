@@ -32,14 +32,19 @@ _Noreturn
 #endif
 extern void
 __assert_fail (
-#if 0
 const char *assertion, const char *file,
-#ifdef __musl__
+#if defined(__musl__) || !defined(ASSERT_FAIL_LINE_SIGNED)
 	unsigned
 #endif
         int line, const char *function
+)
+#ifdef __cplusplus
+throw()
 #endif
-) __attribute__((__noreturn__));
+#if __STDC_VERSION__ >= 201112L
+ __attribute__((__noreturn__))
+#endif
+;
 extern char **environ;
 extern void abort(void) __attribute__((noreturn));
 
