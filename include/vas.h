@@ -2,7 +2,11 @@
 #define LIBRUNT_VAS_H_
 
 #define MINIMUM_USER_ADDRESS  ((char*)0x400000) /* FIXME: less {x86-64,GNU/Linux}-specific please */
+#if defined(__x86_64__) || defined(x86_64)
 #define MAXIMUM_USER_ADDRESS  ((char*)(0x800000000000ul-1)) /* FIXME: less {x86-64,GNU/Linux}-specific please */
+#else
+#define MAXIMUM_USER_ADDRESS ((uintptr_t)-1)
+#endif
 
 #ifndef WORD_BITSIZE
 #define WORD_BITSIZE ((sizeof (void*))<<3)
@@ -17,6 +21,7 @@
 /* The biggest virtual address that we might find in an executable image. */
 // #define BIGGEST_SANE_EXECUTABLE_VADDR  (1ull<<31)
 #define BIGGEST_SANE_USER_ALLOC ((1ull<<32)-1ull)
+#define BIGGEST_SANE_DSO_VADDR BIGGEST_SANE_USER_ALLOC
 
 #define MAXPTR(a, b) \
 	((((uintptr_t)(a)) > ((uintptr_t)(b))) ? (a) : (b))
