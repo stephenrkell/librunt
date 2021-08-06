@@ -119,13 +119,14 @@ struct R_DEBUG_STRUCT_TAG
 	} r_state;
 	ElfW(Addr) r_ldbase;
 };
+
+#endif
+
 #ifndef RTLD_DEFAULT
 #define RTLD_DEFAULT ((void*)0) /* HACK: GNU-specific? */
 #endif
 #ifndef RTLD_NEXT
 #define RTLD_NEXT ((void*)-1) /* HACK: GNU-specific? */
-#endif
-
 #endif
 
 extern ElfW(Dyn) _DYNAMIC[] __attribute__((weak));
