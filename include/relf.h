@@ -79,14 +79,28 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
 
 /* This is a giant HACK that is needed only because we might be reading
  * _DYNAMIC entries before or after they get relocated by ADJUST_DYN_INFO.
+ * We relocate if we see 'x' less than the base addr.
  * 
  * This logic only works on objects whose load address (high_base_addr)
- * is greater than their maximum vaddr. This is usually true, but BEWARE... */
-#define RELF_MAYBE_ADJUST(x, high_base_addr) ( \
-   (((uintptr_t)(x)) < ((uintptr_t)(high_base_addr))) ? \
-       (((uintptr_t)(high_base_addr))+((uintptr_t)(x)))  \
-     : ((uintptr_t)(x)) \
+ * is greater than their maximum vaddr, i.e. the unrelocated vaddr passed
+ * as 'x'. If 'x' is greater than the base addr, we won't relocate. This
+ * is usually correct, but BEWARE... e.g. if low load addrs are in use.
+ *
+ * We use convoluted comparison to help accommodate the appalling HACK in
+ * libsystrap where a DT_DEBUG entry is created to point into another DSO.
+ * We only consider that we have an absolute address if the address falls
+ * between the DSO base address and the highest plausible address within a
+ * DSO at that base. Otherwise it's an offset in need of adjustment. And
+ * negative numbers are always included in that. */
+#define RELF_MAYBE_ADJUST3(x, high_base_addr, limit_vaddr) ( \
+   (((uintptr_t)(x)) >= ((uintptr_t)(high_base_addr)) && \
+    ((uintptr_t)(x)) < ((uintptr_t)(high_base_addr) + (uintptr_t)(limit_vaddr))) ? \
+       ((uintptr_t)(x)) \
+     : (((uintptr_t)(high_base_addr))+((uintptr_t)(x))) \
 )
+
+#define RELF_MAYBE_ADJUST(x, high_base_addr) \
+   (RELF_MAYBE_ADJUST3(x, high_base_addr, BIGGEST_SANE_DSO_VADDR))
 
 #ifdef RELF_DEFINE_STRUCTURES
 struct LINK_MAP_STRUCT_TAG
@@ -110,13 +124,14 @@ struct R_DEBUG_STRUCT_TAG
 	} r_state;
 	ElfW(Addr) r_ldbase;
 };
+
+#endif
+
 #ifndef RTLD_DEFAULT
 #define RTLD_DEFAULT ((void*)0) /* HACK: GNU-specific? */
 #endif
 #ifndef RTLD_NEXT
 #define RTLD_NEXT ((void*)-1) /* HACK: GNU-specific? */
-#endif
-
 #endif
 
 extern ElfW(Dyn) _DYNAMIC[] __attribute__((weak));
@@ -582,7 +597,8 @@ get_highest_loaded_object_below(void *ptr)
 	/* Walk all the loaded objects' load addresses. 
 	 * The load address we want is the next-lower one. */
 	struct LINK_MAP_STRUCT_TAG *highest_lower_seen = NULL;
-	for (struct LINK_MAP_STRUCT_TAG *l = find_r_debug()->r_map; l; l = l->l_next)
+	struct r_debug *r = find_r_debug();
+	for (struct LINK_MAP_STRUCT_TAG *l = r->r_map; l; l = l->l_next)
 	{
 		if ((char*) l->l_addr <= (char*) ptr
 			&& (!highest_lower_seen || 
