@@ -2,6 +2,9 @@
 #define LIBALLOCS_BITMAP_H_
 
 #include <assert.h>
+#ifdef __cplusplus
+#define _Static_assert(args...) static_assert(args)
+#endif
 // want a truly word-sized integer... let's use uintptr_t for now
 #include <stdint.h>
 #include "bitops.h"
