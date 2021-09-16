@@ -32,6 +32,7 @@ _Noreturn
 #endif
 extern void
 __assert_fail (
+#ifndef __cplusplus
 const char *assertion, const char *file,
 #if defined(__musl__) || !defined(ASSERT_FAIL_LINE_SIGNED)
 	unsigned
