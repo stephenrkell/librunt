@@ -30,11 +30,14 @@ int strcmp(const char *s1, const char *s2);
 #if __STDC_VERSION__ >= 201112L
 _Noreturn
 #endif
+/* musl's 'line' is signed, but glibc's is unsigned. It doesn't matter
+ * in practice but the compiler will throw a fit. We try to be slick
+ * by omitting argument specs, but that doesn't work in C++. */
 extern void
 __assert_fail (
 #ifndef __cplusplus
 const char *assertion, const char *file,
-#if defined(__musl__) || !defined(ASSERT_FAIL_LINE_SIGNED)
+#if !defined(__musl__) && !defined(ASSERT_FAIL_LINE_SIGNED)
 	unsigned
 #endif
         int line, const char *function
