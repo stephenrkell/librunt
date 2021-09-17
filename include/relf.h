@@ -38,6 +38,7 @@ const char *assertion, const char *file,
 	unsigned
 #endif
         int line, const char *function
+#endif
 )
 #ifdef __cplusplus
 throw()
