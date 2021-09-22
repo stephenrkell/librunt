@@ -9,6 +9,7 @@
 #else
 #include <fcntl.h>
 #endif
+#include <stdlib.h> /* for abort() */
 
 /* Don't include stdio -- trap-syscalls won't like it, for example. */
 int sscanf(const char *str, const char *format, ...);
