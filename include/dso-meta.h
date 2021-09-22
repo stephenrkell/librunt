@@ -134,7 +134,7 @@ void __runt_sections_notify_define_section(
 		T *lower = base; \
 		T *ret = NULL; \
 		if (upper - lower == 0) abort(); \
-		if (proj(lower) >= target_proj_val) \
+		if (proj(lower) <= target_proj_val) \
 		{ \
 			while (upper - lower != 1) \
 			{ \
