@@ -71,4 +71,6 @@
 #define ROUND_UP_PTR_TO_PAGE(p) ROUND_UP_PTR((p), MIN_PAGE_SIZE)
 #endif
 
+#define DIVIDE_ROUNDING_UP(x, y) (((x)+((y)-1))/(y))
+
 #endif
