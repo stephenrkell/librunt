@@ -35,6 +35,9 @@ char *get_exe_fullname(void)
 	if (exe_fullname[0]) return exe_fullname;
 	else return NULL;
 }
+/* better name for the public version */
+const char *__runt_get_exe_realpath(void)
+{ return get_exe_fullname(); }
 
 char *get_exe_basename(void) __attribute__((visibility("hidden")));
 char *get_exe_basename(void)

@@ -35,11 +35,13 @@ int dl_for_one_object_phdrs(void *handle,
 	void *data) PROTECTED;
 const char *dynobj_name_from_dlpi_name(const char *dlpi_name,
 	void *dlpi_addr) PROTECTED;
+const char *__runt_get_exe_realpath(void) PROTECTED;
 struct link_map *__runt_files_lookup_by_addr(void *addr) PROTECTED;
 struct file_metadata;
 struct file_metadata *__runt_files_metadata_by_addr(void *addr) PROTECTED;
 
 extern rlim_t __stack_lim_cur PROTECTED;
+
 
 void __runt_auxv_init(void) PROTECTED;
 _Bool __runt_auxv_get_asciiz(const char **out_start, const char **out_end) PROTECTED;

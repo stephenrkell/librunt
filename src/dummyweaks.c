@@ -26,3 +26,8 @@ struct link_map *__runt_files_lookup_by_addr(void *addr)
 {
 	return NULL;
 }
+
+const char *__runt_get_exe_realpath(void)
+{
+	return NULL;
+}
