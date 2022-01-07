@@ -91,7 +91,7 @@ struct file_metadata
 #define CONTAINER_OF(ptr, outer_type, member) \
 	((outer_type *)(((uintptr_t)(ptr)) - offsetof(outer_type, member)))
 
-void __runt_deinit_file_metadata(void *fm) __attribute__((visibility("protected")));
+void __runt_deinit_file_metadata(void *fm);
 
 inline 
 ElfW(Sym) *__runt_files_get_symtab_by_idx(struct file_metadata *meta, ElfW(Half) i)
@@ -102,8 +102,8 @@ ElfW(Sym) *__runt_files_get_symtab_by_idx(struct file_metadata *meta, ElfW(Half)
 }
 
 
-struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site) __attribute__((visibility("protected")));
-void __runt_files_notify_unload(const char *copied_filename) __attribute__((visibility("protected")));
+struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site);
+void __runt_files_notify_unload(const char *copied_filename);
 
 const void *
 __runt_find_section_boundary(
@@ -111,17 +111,17 @@ __runt_find_section_boundary(
 	ElfW(Word) flags,
 	_Bool backwards,
 	struct file_metadata **out_fm,
-	unsigned *out_shndx) __attribute__((visibility("protected")));
+	unsigned *out_shndx);
 
 void __runt_segments_notify_define_segment(
 	struct file_metadata *meta,
 	unsigned phndx,
 	unsigned loadndx
-) __attribute__((visibility("protected")));
+);
 void __runt_sections_notify_define_section(
 	struct file_metadata *meta,
 	const ElfW(Shdr) *shdr
-) __attribute__((visibility("protected")));
+);
 
 #ifdef _GNU_SOURCE /* We use the GNU C "statement expressions" extension */
 /* Macro which open-codes a binary search over a sorted array

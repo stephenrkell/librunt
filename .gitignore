@@ -1,0 +1,9 @@
+build/
+lib/librunt.a
+lib/librunt.so
+lib/librunt_dummyweaks.o
+lib/librunt_dummyweaks.so
+lib/librunt_nonshared.a
+lib/librunt_preload.a
+lib/librunt_preload.so
+lib/outdir
