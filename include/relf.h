@@ -931,7 +931,7 @@ ElfW(Sym) *gnu_hash_lookup(ElfW(Word) *gnu_hash, ElfW(Sym) *symtab, const unsign
 }
 
 static inline
-int gnu_hash_walk_syms(ElfW(Word) *gnu_hash, int (*cb)(ElfW(Sym) *, void *), ElfW(Sym) *symtab, void *arg)
+int gnu_hash_walk_syms(ElfW(Word) *gnu_hash, int (*cb)(ElfW(Sym) *, void *), ElfW(Sym) *symtab, unsigned char *strtab, void *arg)
 {
 	uint32_t *gnu_hash_words = (uint32_t *) gnu_hash;
 	uint32_t nbuckets = gnu_hash_words[0];
@@ -946,7 +946,7 @@ int gnu_hash_walk_syms(ElfW(Word) *gnu_hash, int (*cb)(ElfW(Sym) *, void *), Elf
 	// uint32_t lowest_symidx = buckets[hashval % nbuckets]; // might be 0
 	struct LINK_MAP_STRUCT_TAG *l = get_highest_loaded_object_below(gnu_hash);
 	ElfW(Dyn) *d = (ElfW(Dyn) *) l->l_ld;
-	unsigned symcount = dynamic_symbol_count(d, l);
+	unsigned symcount = dynamic_symbol_count_fast(symtab, strtab, NULL);
 	for (uint32_t symidx = symbias; 
 			symidx != symcount;
 			symidx++)
@@ -1152,9 +1152,12 @@ int walk_symbols_in_object(struct LINK_MAP_STRUCT_TAG *l,
 {
 	ElfW(Sym) *symtab = get_dynsym(l);
 	if (!symtab) return 0;
+
+	unsigned char *strtab = get_dynstr(l);
+	if (!strtab) return 0;
 	
 	ElfW(Word) *gnu_hash = get_gnu_hash(l);
-	if (gnu_hash) return gnu_hash_walk_syms(gnu_hash, cb, symtab, arg);
+	if (gnu_hash) return gnu_hash_walk_syms(gnu_hash, cb, symtab, strtab, arg);
 	
 	ElfW(Word) *hash = get_sysv_hash(l);
 	if (hash) return hash_walk_syms(hash, cb, symtab, arg);
