@@ -42,7 +42,7 @@ void *dlopen(const char *filename, int flag)
 	
 	if (!orig_dlopen) // happens if we're called before liballocs init
 	{
-		orig_dlopen = dlsym(RTLD_NEXT, "dlopen");
+		orig_dlopen = fake_dlsym(RTLD_NEXT, "dlopen");
 		if (!orig_dlopen) abort();
 	}
 	/* We ensure that all files loaded by the first dlopen
@@ -344,12 +344,14 @@ int dl_iterate_phdr(
 	if (!orig_dl_iterate_phdr)
 	{
 		// write_string("Blah11\n");
-		orig_dl_iterate_phdr = /*fake_*/dlsym(RTLD_NEXT, "dl_iterate_phdr");
-		//if (orig_dl_iterate_phdr == (void*) -1)
-		//{
-		//	our_dlerror = "symbol not found";
-		//	orig_dl_iterate_phdr = NULL;
-		//}
+		/* Needs to be fake, because if liballocs gets init'd in the middle of a malloc,
+		 * the real dlsym would try to reentrantly malloc. */
+		orig_dl_iterate_phdr = fake_dlsym(RTLD_NEXT, "dl_iterate_phdr");
+		if (orig_dl_iterate_phdr == (void*) -1)
+		{
+			our_dlerror = "symbol not found";
+			orig_dl_iterate_phdr = NULL;
+		}
 		assert(orig_dl_iterate_phdr);
 	}
 
