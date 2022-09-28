@@ -242,7 +242,7 @@ ElfW(auxv_t) *get_auxv_via_environ(char **environ, void *stackptr, void *stack_u
 			#undef IS_AT_NULL
 			#undef NEXT_SEARCHP
 			ElfW(auxv_t) *at_null = searchp;
-			assert(at_null->a_type == AT_NULL && !at_null->a_un.a_val);
+			if (!(at_null->a_type == AT_NULL && !at_null->a_un.a_val)) __assert_fail("found end of auxv", __FILE__, __LINE__, __func__);
 			
 			/* Search downwards for the beginning of the auxv. How can we
 			 * recognise this? It's preceded by the envp's terminating zero word. 
@@ -306,15 +306,16 @@ ElfW(auxv_t) *get_auxv_via_libc_stack_end(void)
 	if (!&__libc_stack_end || !__libc_stack_end) return NULL;
 	uintptr_t *pos = (uintptr_t *) __libc_stack_end;
 	unsigned long nargs = *pos;
-	assert(nargs > 0);
+	if (!(nargs > 0)) __assert_fail("nargs check", __FILE__, __LINE__, __func__);
+
 	++pos;
 	for (unsigned i = 0; i < nargs; ++i) ++pos;
-	assert(!*pos); // null terminator at the end of argv vector
+	if (!(!*pos)) __assert_fail("null terminator at the end of argv", __FILE__, __LINE__, __func__);
 	while (!*pos) ++pos;
 	while (*pos) ++pos; // envp vector
 	while (!*pos) ++pos;
 	ElfW(auxv_t) *auxv = (ElfW(auxv_t) *) pos;
-	assert(auxv->a_type <= AT_MAX);
+	if (!(auxv->a_type <= AT_MAX)) __assert_fail("a_type below AT_MAX", __FILE__, __LINE__, __func__);
 	return auxv;
 }
 
@@ -359,13 +360,15 @@ struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
 
 	/* auxv_array_start[0] is the first word higher than envp's null terminator. */
 	lims.env_vector_terminator = ((const char**) auxv_array_start) - 1;
-	assert(!*lims.env_vector_terminator);
+	/* In some strange cases we get multiple words of zero terminator. */
+	while (!*((char**) lims.env_vector_terminator - 1)) --lims.env_vector_terminator;
+	if (!(!*lims.env_vector_terminator)) __assert_fail("found envp terminator", __FILE__, __LINE__, __func__);
 	lims.env_vector_start = lims.env_vector_terminator;
 	while (*((char**) lims.env_vector_start - 1)) --lims.env_vector_start;
 
 	/* argv_vector_terminator is the next word lower than envp's first entry. */
 	lims.argv_vector_terminator = ((const char**) lims.env_vector_start) - 1;
-	assert(!*lims.argv_vector_terminator);
+	if (!(!*lims.argv_vector_terminator)) __assert_fail("found argv terminator", __FILE__, __LINE__, __func__);
 	lims.argv_vector_start = lims.argv_vector_terminator;
 	unsigned nargs = 0;
 	/* To search for the start of the array, we look for an integer that is
@@ -376,7 +379,7 @@ struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
 		--lims.argv_vector_start;
 		++nargs;
 	}
-	assert(*((uintptr_t*) lims.argv_vector_start - 1) == nargs);
+	if (!(*((uintptr_t*) lims.argv_vector_start - 1) == nargs)) __assert_fail("argv vector length match", __FILE__, __LINE__, __func__);
 	lims.p_argcount = (intptr_t*) lims.argv_vector_start - 1;
 
 	/* Now we have the arg vectors and env vectors, loop through them
@@ -450,7 +453,8 @@ ElfW(Dyn) *find_dynamic(char **environ, void *stackptr)
 		if (auxv)
 		{
 			// ElfW(auxv_t) found_phdr = auxv
-			assert(0); // FIXME: Complete
+			__assert_fail("implementation", __FILE__, __LINE__, __func__);
+			// FIXME: Complete
 		}
 	}
 	return NULL; /* shuts up frontc */
@@ -740,7 +744,7 @@ unsigned long dynamic_symbol_count_fast(ElfW(Sym) *dynsym, unsigned char *dynstr
 	if (!dynsym || !dynstr) return 0;
 	/* dynsym_nasty_hack */
 	/* Take a wild guess, by assuming dynstr directly follows dynsym. */
-	assert((unsigned char *) dynstr > (unsigned char *) dynsym);
+	if (!((unsigned char *) dynstr > (unsigned char *) dynsym)) __assert_fail("dynstr position assumption", __FILE__, __LINE__, __func__);
 	// round down, because dynsym might be padded
 	return ((unsigned char *) dynstr - (unsigned char *) dynsym) / sizeof (ElfW(Sym));
 }
@@ -999,7 +1003,7 @@ ElfW(Sym) *symbol_lookup_linear(ElfW(Sym) *symtab, ElfW(Sym) *symtab_end,
 	ElfW(Sym) *found_sym = NULL;
 	for (ElfW(Sym) *p_sym = &symtab[0]; p_sym <= symtab_end; ++p_sym)
 	{
-		ssize_t distance_to_strtab_end = strtab_end - &strtab[p_sym->st_name];
+		signed long distance_to_strtab_end = strtab_end - &strtab[p_sym->st_name];
 		if (distance_to_strtab_end > 0 &&
 			0 == strncmp((const char*) &strtab[p_sym->st_name], sym, distance_to_strtab_end))
 		{
@@ -1105,7 +1109,11 @@ void *fake_dlsym(void *handle, const char *symname)
 	 * "this one". */
 
 	struct LINK_MAP_STRUCT_TAG *ourselves = NULL;
-	if (handle == RTLD_NEXT) assert(_DYNAMIC);
+	if (handle == RTLD_NEXT)
+	{
+		if (!(_DYNAMIC)) __assert_fail("_DYNAMIC found", __FILE__, __LINE__, __func__);
+
+	}
 	for (struct LINK_MAP_STRUCT_TAG *l = find_r_debug()->r_map;
 			l;
 			l = l->l_next)
