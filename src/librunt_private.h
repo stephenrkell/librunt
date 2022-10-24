@@ -7,7 +7,7 @@
 
 struct link_map;
 
-void *(*orig_dlopen)(const char *, int) __attribute__((visibility("hidden")));
+extern void *(*orig_dlopen)(const char *, int) __attribute__((visibility("hidden")));
 
 char *get_exe_fullname(void) __attribute__((visibility("hidden")));
 char *get_exe_basename(void) __attribute__((visibility("hidden")));
