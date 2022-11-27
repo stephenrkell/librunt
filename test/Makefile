@@ -3,13 +3,16 @@ THIS_MAKEFILE := $(lastword $(MAKEFILE_LIST))
 
 UNIQTYPES_BASE ?= /usr/lib/meta
 META_BASE ?= /usr/lib/meta
-LIBRUNT_BUILD ?= $(shell ls -1t $(realpath $(dir $(THIS_MAKEFILE)))/../build/*/librunt_preload.so | head -n1)
-LIBRUNT_BUILD_DIR ?= $(dir $(LIBRUNT_BUILD))
+# We want to test the most recent build, whether 'opt' or 'debug'.
+# We used to look at timestamps in build/, but just use 'lib'.
+LIBRUNT_LIB_DIR ?= $(realpath $(dir $(THIS_MAKEFILE))/..)/lib
+LIBRUNT_BUILD ?= $(realpath $(LIBRUNT_LIB_DIR)/outdir)/librunt_preload.so
 
+export LIBRUNT_LIB_DIR
 export LIBRUNT_BUILD
 
 CFLAGS += -g -I$(realpath $(dir $(THIS_MAKEFILE)))/../include
-LDFLAGS += -L$(LIBRUNT_BUILD_DIR)
+LDFLAGS += -L$(LIBRUNT_LIB_DIR)
 # HMM -- this is causing us to re-add the +='d stuff in each recursive make.
 # can we get away without this?
 export CFLAGS
@@ -60,6 +63,12 @@ checkrun-query:
 	$(MAKE) cleanrun-query >/dev/null 2>&1
 checkrun-dlfcn:
 	$(MAKE) cleanrun-dlfcn >/dev/null 2>&1
+checkrun-find-r-debug:
+	$(MAKE) cleanrun-find-r-debug >/dev/null 2>&1
+checkrun-relf-auxv-dynamic:
+	$(MAKE) cleanrun-relf-auxv-dynamic >/dev/null 2>&1
+checkrun-relf-auxv-static:
+	$(MAKE) cleanrun-relf-auxv-static >/dev/null 2>&1
 
 # Most test cases should output a librunt summary in which 
 # -- FIXME
@@ -74,11 +83,6 @@ checkrun-%:
 
 # disabled cases
 # (none right now)
-# Some cases are special and require only an exit status of zero
-checkrun-relf-auxv-dynamic:
-	$(MAKE) cleanrun-relf-auxv-dynamic >/dev/null 2>&1
-checkrun-relf-auxv-static:
-	$(MAKE) cleanrun-relf-auxv-static >/dev/null 2>&1
 
 # run logic
 
