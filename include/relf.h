@@ -395,8 +395,10 @@ struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
 
 	/* Now for the asciiz. We lump it all in one chunk. */
 	lims.asciiz_start = (char*) (lims.auxv_array_terminator + 1);
-	lims.asciiz_end = (const char *) RELF_ROUND_UP_PTR_(highest_asciiz_seen, sizeof (intptr_t));
-	while (*(intptr_t *) lims.asciiz_end != 0) lims.asciiz_end += sizeof (intptr_t);
+	/* On Linux there is normally a zero word at the end of asciiz, but
+	 * we can't rely on this e.g. because of valgrind's user-mode exec,
+	 * which does not add a zero word. */
+	lims.asciiz_end = highest_asciiz_seen + strlen(highest_asciiz_seen) + 1;
 
 	return lims;
 }
