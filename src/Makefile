@@ -50,12 +50,9 @@ default: all # autotools likes an 'all' target (I think)
 # What binaries do we build?
 TARGETS += librunt_preload.so    # the main binary
 TARGETS += librunt_preload.a     # in archive form, for extending libraries to link in (liballocs, libcrunch)
-TARGETS += librunt.so            # nasty linker script for clients, working around uniqueness problem
-TARGETS += librunt_nonshared.a   # uniqtypes and (own-malloc) allocator stubs; linker script points to this, s.t. client exes (-lrunt) get this linked in statically
 TARGETS += librunt.a             # the main binary usable for statically-linked client exes -- no uniqueness problem
 TARGETS += librunt_dummyweaks.so # non-client exes, that contain instrumented code, get -l this (but ideally would eliminate)
 TARGETS += librunt_dummyweaks.o  # non-client solibs, that contain instrumented code, get this linked in (i.e. avoiding a .so dependency; this is okay for solibs because LD_PRELOAD overrides them)
-                                   # (what do client solibs get? easiest is just to treat them like exes, *except* I *think* they don't get nonshared_hooks.o)
 
 .PHONY: all
 all: $(TARGETS)
@@ -83,10 +80,9 @@ MAIN_OBJS := librunt.o auxv.o files.o segments.o sections.o symbols.o tls.o $(UT
 PRELOAD_OBJS := preload.o
 
 # Generate deps.
-ALL_OBJS := $(MAIN_OBJS) $(NOPRELOAD_OBJS) $(NONSHARED_OBJS) $(PRELOAD_OBJS)
+ALL_OBJS := $(MAIN_OBJS) $(NOPRELOAD_OBJS) $(PRELOAD_OBJS)
 # enumerate src files backwards from our .o files
-# -- HACK: nonshared_hooks.o is not built from .c source
-DEP_OBJS := $(filter-out $(NONSHARED_OBJS),$(ALL_OBJS))
+DEP_OBJS := $(ALL_OBJS)
 C_SRC := $(sort $(patsubst %.o,%.c,$(DEP_OBJS)))
 # Becuase of our vpath'd rules, we can't do patsubst on the source path to get the
 # obj path... $< will be something wacky. Instead, work from the object file.
@@ -104,7 +100,6 @@ $(foreach f,$(DEP_OBJS),$(eval $(call rule-for-depfile,$(f))))
 include $(DEPS)
 
 LIBRUNT_PRELOAD_A_OBJS := $(MAIN_OBJS) $(PRELOAD_OBJS)
-LIBRUNT_NONSHARED_A_OBJS := $(NOPRELOAD_OBJS) $(NONSHARED_OBJS)
 LIBRUNT_A_OBJS := $(MAIN_OBJS) $(NOPRELOAD_OBJS) # $(PRELOAD_OBJS)
 OBJCOPY ?= objcopy
 librunt_preload.so: LDLIBS += -ldl $(LIBUNWIND_LDLIBS)
@@ -145,7 +140,6 @@ librunt_preload.so: librunt_preload.a # dlmalloc.a
 %.a:
 	$(AR) r "$@" $+
 librunt_preload.a: $(LIBRUNT_PRELOAD_A_OBJS)
-librunt_nonshared.a: $(LIBRUNT_NONSHARED_A_OBJS)
 librunt.a: $(LIBRUNT_A_OBJS)
 
 ifeq ($(USE_FAKE_LIBUNWIND),)

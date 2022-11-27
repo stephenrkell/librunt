@@ -3,7 +3,7 @@ SRCROOT := $(realpath $(dir $(THIS_MAKEFILE))/..)
 
 default: all
 
-SYMLINKS := librunt_nonshared.a librunt_preload.a librunt_preload.so \
+SYMLINKS := librunt_preload.a librunt_preload.so \
     librunt_dummyweaks.o librunt_dummyweaks.so librunt.a \
     librunt.so
 
@@ -29,9 +29,9 @@ outdir:
 $(filter-out librunt.so,$(SYMLINKS)): %: $(SRCROOT)/build/$(outdir)/%
 	ln -sf outdir/$(notdir $<) "$@"
 
-# the librunt.so file lives in the srcdir
-librunt.so:
-	ln -sf "$(SRCROOT)"/src/librunt.so $@
+# the librunt.so file is now just the preload .so file
+librunt.so: librunt_preload.so
+	ln -sf $< $@
 
 clean:
 	rm -f outdir $(SYMLINKS) librunt.so

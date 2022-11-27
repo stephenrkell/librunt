@@ -1,2 +1,0 @@
-OUTPUT_FORMAT(elf64-x86-64)
-GROUP ( librunt_dummyweaks.so librunt_nonshared.a )
