@@ -5,7 +5,7 @@
 #if defined(__x86_64__)
 #define __ELF_NATIVE_CLASS 64
 #define ELF_WORD_BITSIZE 64
-#elif defined(__i386__)
+#elif defined(__i386__) || defined(__arm__)
 #define __ELF_NATIVE_CLASS 32
 #define ELF_WORD_BITSIZE 32
 #else

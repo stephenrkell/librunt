@@ -63,6 +63,8 @@ char *get_exe_basename(void)
 const char __ldso_name[] __attribute__((visibility("protected"))) = "/lib64/ld-linux-x86-64.so.2";
 #elif defined (__i386__)
 const char __ldso_name[] __attribute__((visibility("protected"))) = "/lib/ld-linux.so.2";
+#elif defined (__arm__) && defined(__ARM_EABI__) && defined(__ARM_FP)
+const char __ldso_name[] __attribute__((visibility("protected"))) = "/lib/ld-linux-armhf.so.3";
 #else
 #error "Unrecognised architecture/ABI"
 #endif

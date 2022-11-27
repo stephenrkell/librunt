@@ -70,6 +70,8 @@ void *dlopen(const char *filename, int flag)
 						"/lib/x86_64-linux-gnu/", "/usr/lib/x86_64-linux-gnu/",
 #elif defined(__i386__)
 						"/lib/i386-linux-gnu/", "/usr/lib/i386-linux-gnu/",
+#elif defined(__arm__) && defined(__ARM_EABI__) && defined(__ARM_FP)
+						"/lib/arm-linux-gnueabihf/", "/usr/lib/arm-linux-gnueabihf/",
 #else
 #error "Unrecognised platform"
 #endif

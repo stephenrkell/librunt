@@ -145,7 +145,7 @@ static inline int nlzb64(uint64_t x)
 #define nlz nlz64
 #define nto nto64
 #define nlo nlo64
-#elif defined(__i386__)
+#elif defined(__i386__) || defined(__arm__)
 #define ntz ntz32
 #define nlz nlz32
 #define nto nto32
