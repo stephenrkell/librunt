@@ -80,6 +80,12 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
 #define R_DEBUG_MAKE_ENUMERATOR(p) p
 #endif
 
+/* To add saturatingwise, we add the smaller of
+ * (the-other-arg, dist-to-the-max). We can use vas.h's
+ * MINPTR/MAXPTR here because they are defined on uintptr_t. */
+#define RELF_ADD_SATURATING(x, y, max) \
+  ((x) + MINPTR( (max)-(x), (y) ))
+
 /* This is a giant HACK that is needed only because we might be reading
  * _DYNAMIC entries before or after they get relocated by ADJUST_DYN_INFO.
  * We relocate if we see 'x' less than the base addr.
@@ -97,7 +103,7 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
  * negative numbers are always included in that. */
 #define RELF_MAYBE_ADJUST3(x, high_base_addr, limit_vaddr) ( \
    (((uintptr_t)(x)) >= ((uintptr_t)(high_base_addr)) && \
-    ((uintptr_t)(x)) < ((uintptr_t)(high_base_addr) + (uintptr_t)(limit_vaddr))) ? \
+    ((uintptr_t)(x)) < RELF_ADD_SATURATING((uintptr_t)(high_base_addr), (uintptr_t)(limit_vaddr), (uintptr_t)-1)) ? \
        ((uintptr_t)(x)) \
      : (((uintptr_t)(high_base_addr))+((uintptr_t)(x))) \
 )
