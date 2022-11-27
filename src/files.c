@@ -67,10 +67,10 @@ static int compare_lm_pair_by_load_addr(const void *v1, const void *v2)
 	const struct lm_pair *p1 = v1;
 	const struct lm_pair *p2 = v2;
 	if (p1 == p2) return 0;
-	if (!p1->lm) /* p1 compares higher */ return 1;
-	if (!p2->lm) /* p2 compares higher */ return -1;
-	intptr_t addr1 = (intptr_t) p1->lm->l_addr;
-	intptr_t addr2 = (intptr_t) p2->lm->l_addr;
+	if (!p1->lm) /* p2 compares higher */ return -1;
+	if (!p2->lm) /* p1 compares higher */ return 1;
+	uintptr_t addr1 = (uintptr_t) p1->lm->l_addr;
+	uintptr_t addr2 = (uintptr_t) p2->lm->l_addr;
 	/* avoid integer truncation issues by just returning -1 or 1 */
 	return (addr1 == addr2) ? 0 : (addr1 < addr2) ? -1 : 1;
 }
