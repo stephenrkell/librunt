@@ -9,4 +9,5 @@ int main(void)
 	 * We could just do some dlopens etc and check nothing
 	 * crashes... remembering that we preload our own dlopen.
 	 */
+	return 0;
 }
