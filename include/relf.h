@@ -88,25 +88,20 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
 
 /* This is a giant HACK that is needed only because we might be reading
  * _DYNAMIC entries before or after they get relocated by ADJUST_DYN_INFO.
- * We relocate if we see 'x' less than the base addr.
+ * We relocate if we see 'x' less than their maximum vaddr (i.e. the limit
+ * of the intra-DSO address space... NOT the DSO's limit in the overall
+ * address space).
  * 
  * This logic only works on objects whose load address (high_base_addr)
  * is greater than their maximum vaddr, i.e. the unrelocated vaddr passed
  * as 'x'. If 'x' is greater than the base addr, we won't relocate. This
  * is usually correct, but BEWARE... e.g. if low load addrs are in use.
- *
- * We use convoluted comparison to help accommodate the appalling HACK in
- * libsystrap where a DT_DEBUG entry is created to point into another DSO.
- * We only consider that we have an absolute address if the address falls
- * between the DSO base address and the highest plausible address within a
- * DSO at that base. Otherwise it's an offset in need of adjustment. And
- * negative numbers are always included in that. */
+ */
 #define RELF_MAYBE_ADJUST3(x, high_base_addr, limit_vaddr) ( \
-   (((uintptr_t)(x)) >= ((uintptr_t)(high_base_addr)) && \
-    ((uintptr_t)(x)) < RELF_ADD_SATURATING((uintptr_t)(high_base_addr), (uintptr_t)(limit_vaddr), (uintptr_t)-1)) ? \
-       ((uintptr_t)(x)) \
-     : (((uintptr_t)(high_base_addr))+((uintptr_t)(x))) \
-)
+   ( ((uintptr_t)(x)) < ((uintptr_t)(limit_vaddr)) ) \
+        ? (((uintptr_t)(x)) + ((uintptr_t)(high_base_addr))) \
+        : (x) \
+ )
 
 #define RELF_MAYBE_ADJUST(x, high_base_addr) \
    (RELF_MAYBE_ADJUST3(x, high_base_addr, BIGGEST_SANE_DSO_VADDR))
@@ -569,6 +564,7 @@ uintptr_t guess_load_addr_early(void)
 	}
 	return (uintptr_t) -1;
 }
+
 static inline 
 struct R_DEBUG_STRUCT_TAG *find_r_debug(void)
 {
@@ -588,7 +584,7 @@ struct R_DEBUG_STRUCT_TAG *find_r_debug(void)
 // 		__assert_fail("found r_debug", __FILE__, __LINE__, __func__);
 // 	}
 	if (&_r_debug) return &_r_debug;
-	/* Here we are assuming that local reference works. */
+	/* We've tried linking against an _r_debug and it didn't work. This presumably means that we are the dynamic linker, or are somehow involved in bootstrapping its operation (e.g. we are a chain loader). Here we are assuming that local reference works, i.e. we are getting our own _DYNAMIC. */
 	ElfW(Dyn) *found = &_DYNAMIC ? dynamic_lookup(_DYNAMIC, DT_DEBUG) : NULL;
 	if (found)
 	{
@@ -601,6 +597,15 @@ struct R_DEBUG_STRUCT_TAG *find_r_debug(void)
 			// Not much we can do! Zero makes RELF_MAYBE_ADJUST a no-op.
 			guessed_load_addr = 0;
 		}
+#if 0
+		/* An example of debugging printout that works even very early during startup.
+		 * This debugging printout appears only if librunt.h is included before relf.h.
+		 * Leaving this here just to illustrate. */
+		write_ulong((uintptr_t) guessed_load_addr);
+		write_string("\n");
+		write_ulong(found->d_un.d_ptr);
+		write_string("\n");
+#endif
 		return (struct R_DEBUG_STRUCT_TAG *) RELF_MAYBE_ADJUST(found->d_un.d_ptr, guessed_load_addr);
 	}
 	return NULL;
