@@ -15,6 +15,10 @@
 #include <string.h>
 #include <errno.h>
 #include "librunt_private.h"
+/* We don't have raw_write, so... HACK. */
+#ifndef RAW_SYSCALL_DEFS_H_
+#define raw_write write
+#endif
 #include "relf.h"
 #include "dso-meta.h"
 

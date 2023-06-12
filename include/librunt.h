@@ -20,6 +20,10 @@ typedef struct {
 #include <link.h>
 #include <assert.h>
 
+/* If we're building something to go in the same DSO as librunt,
+ * it's OK to give undefined syms (references) the protected visibility.
+ * Note that this doesn't affect the visibiltiy that the *definition* gets.
+ */
 #ifdef IN_LIBRUNT_DSO
 #define PROTECTED __attribute__((visibility("protected")))
 #else
@@ -68,5 +72,15 @@ extern ElfW(auxv_t) *__auxv_array_terminator PROTECTED;
 extern intptr_t *__auxv_program_argcountp PROTECTED;
 extern void *__program_entry_point PROTECTED;
 extern void *__top_of_initial_stack PROTECTED;
+
+/* Client code to be compiled in the same DSO as librunt can use our hidden stuff,
+ * which is useful for debugging. relf.h conditionally uses this. To do so, check
+ * that librunt.h is included before relf.h. */
+#ifdef IN_LIBRUNT_DSO
+const char *fmt_hex_num(unsigned long n) __attribute__((visibility("hidden")));
+#define write_string(s) raw_write(2, (s), sizeof (s) - 1)
+#define write_chars(s, t)  raw_write(2, s, t - s)
+#define write_ulong(a)   raw_write(2, fmt_hex_num((a)), 18)
+#endif
 
 #endif

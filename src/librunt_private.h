@@ -36,4 +36,6 @@ extern struct link_map *early_lib_handles[MAX_EARLY_LIBS] __attribute((visibilit
         (((uintptr_t)(void*)-1 - (uintptr_t)(p)) < MIN_PAGE_SIZE)
 #endif
 
+const char *fmt_hex_num(unsigned long n) __attribute__((visibility("hidden")));
+
 #endif
