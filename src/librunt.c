@@ -66,7 +66,7 @@ char *get_exe_fullname(void)
 			}
 			if (found_execfn_ent)
 			{
-				strncpy(exe_fullname, (char*) found_execfn_ent->a_un.a_val,
+				strncpy(exe_fullname, realpath_quick((char*) found_execfn_ent->a_un.a_val),
 					sizeof exe_fullname);
 				exe_fullname[sizeof exe_fullname - 1] = '\0';
 				goto out;
