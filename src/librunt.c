@@ -42,13 +42,43 @@ char *get_exe_fullname(void)
 	static _Bool tried;
 	if (!exe_fullname[0] && !tried)
 	{
+		// grab the executable's filename; if we fail, we won't try again
 		tried = 1;
+		/* Use auxv, not /proc. It's more portable, sort of. */
+		struct auxv_limits limits;
+		ElfW(auxv_t) *p_auxv = get_auxv(environ, &limits);
+		if (p_auxv)
+		{
+			limits = get_auxv_limits(p_auxv);
+			ElfW(auxv_t) *found_base_ent = auxv_lookup(p_auxv, AT_BASE);
+			ElfW(auxv_t) *found_execfn_ent = auxv_lookup(p_auxv, AT_EXECFN);
+			if (found_base_ent && found_base_ent->a_un.a_val == 0)
+			{
+				/* This means the interpreter is masquerading as the
+				 * executable. The 'real' executable, which is what we
+				 * want, is in the argv. Luckily, the ld.so has fixed
+				 * up the argument vector for us. We need to realpath
+				 * it, though. */
+				strncpy(exe_fullname, realpath_quick(limits.argv_vector_start[0]),
+					sizeof exe_fullname);
+				exe_fullname[sizeof exe_fullname - 1] = '\0';
+				goto out;
+			}
+			if (found_execfn_ent)
+			{
+				strncpy(exe_fullname, (char*) found_execfn_ent->a_un.a_val,
+					sizeof exe_fullname);
+				exe_fullname[sizeof exe_fullname - 1] = '\0';
+				goto out;
+			}
+		}
+		// OK, fall back on /proc
 		// FIXME: this is sysdep!
-		// grab the executable's basename; if we fail, we won't try again
 		int ret __attribute__((unused))
 		 = readlink("/proc/self/exe", exe_fullname, sizeof exe_fullname);
 		errno = 0;
 	}
+out:
 	if (exe_fullname[0]) return exe_fullname;
 	else return NULL;
 }
