@@ -1086,12 +1086,13 @@ ElfW(Sym) *symbol_lookup_in_object(struct LINK_MAP_STRUCT_TAG *l, const char *sy
 	return symbol_lookup_in_dyn(l->l_ld, l->l_addr, sym);
 }
 
-
 /* preserve NULLs */
+#define LOAD_ADDR_FIXUP_GIVEN_BASE(b, p) \
+	((!(p)) ? NULL : ((void*) (((char*) (p)) + (b))))
 #define LOAD_ADDR_FIXUP_IN_OBJ(l, p) \
-	((!(p)) ? NULL : ((void*) (((char*) (p)) + (l->l_addr))))
+	LOAD_ADDR_FIXUP_GIVEN_BASE((l)->l_addr, p)
 #define LOAD_ADDR_FIXUP(p, p_into_obj) \
-	LOAD_ADDR_FIXUP_IN_OBJ( (uintptr_t) (get_link_map( (p_into_obj) )), (p) )
+	LOAD_ADDR_FIXUP_IN_OBJ( (get_link_map( (p_into_obj) )), (p) )
 
 static inline
 void *sym_to_addr(ElfW(Sym) *sym)
@@ -1112,6 +1113,13 @@ void *sym_to_addr(ElfW(Sym) *sym)
 //	if (!sym) return NULL;
 //	return LOAD_ADDR_FIXUP_IN_OBJ(l, sym->st_value);
 //}
+
+static inline
+void *sym_to_addr_given_base(uintptr_t base, ElfW(Sym) *sym)
+{
+	if (!sym) return NULL;
+	return LOAD_ADDR_FIXUP_GIVEN_BASE(base, sym->st_value);
+}
 
 static inline
 void *fake_dlsym(void *handle, const char *symname)
