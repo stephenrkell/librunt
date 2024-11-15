@@ -67,7 +67,7 @@ LDFLAGS += -Wl,-O2 -flto -Bsymbolic-functions -fPIC
 
 
 # different outputs involve different subgroups of objects
-UTIL_OBJS :=
+UTIL_OBJS := util.o
 UNWIND_MACHINE ?= $(shell arch="$$( gcc -print-multiarch | sed 's/-.*//' )"; \
   case "$$arch" in (i386) echo "x86";; (*) echo "$$arch";; esac )
 ifneq ($(USE_REAL_LIBUNWIND),)

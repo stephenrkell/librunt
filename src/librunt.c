@@ -18,23 +18,6 @@
 #error "librunt.c needs GNU basename() so must not include libgen.h"
 #endif
 
-__attribute__((visibility("hidden")))
-const char *fmt_hex_num(unsigned long n)
-{
-	static char buf[19];
-	buf[0] = '0';
-	buf[1] = 'x';
-	signed i_dig = 15;
-	do
-	{
-		unsigned long dig = (n >> (4 * i_dig)) & 0xf;
-		buf[2 + 15 - i_dig] = (dig > 9) ? ('a' + dig - 10) : ('0' + dig);
-		--i_dig;
-	} while (i_dig >= 0);
-	buf[18] = '\0';
-	return buf;
-}
-
 char *get_exe_fullname(void) __attribute__((visibility("hidden")));
 char *get_exe_fullname(void)
 {
@@ -46,7 +29,7 @@ char *get_exe_fullname(void)
 		tried = 1;
 		/* Use auxv, not /proc. It's more portable, sort of. */
 		struct auxv_limits limits;
-		ElfW(auxv_t) *p_auxv = get_auxv(environ, &limits);
+		ElfW(auxv_t) *p_auxv = environ ? get_auxv(environ, &limits) : NULL;
 		if (p_auxv)
 		{
 			limits = get_auxv_limits(p_auxv);
@@ -206,9 +189,19 @@ char *realpath_quick(const char *arg) __attribute__((visibility("hidden")));
 char *realpath_quick(const char *arg)
 {
 	static char buf[4096];
-	errno = 0;
+	errno = 0; // FIXME: why do we do this? Can we not just leave errno be?
 	char *ret = realpath(arg, &buf[0]);
-	if (errno) { errno = 0; return NULL; }
+	if (errno && !ret) { errno = 0; return NULL; }
+	if (errno)
+	{
+		/* I've seen glibc's readlink set errno but return something
+		 * anyway. This presumably means that some intervening operation
+		 * in realpath set errno and it was not cleared. Since readlink
+		 * does not see fit to clear it, let's avoid clearing it ourselves.
+		 * Leaving this branch here in case we want to vary the handling of
+		 * this later. I suppose uncleared errno is pretty normal. */
+		return ret;
+	}
 	return ret;
 }
 

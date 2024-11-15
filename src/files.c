@@ -211,8 +211,15 @@ static void *get_or_map_file_range(struct file_metadata *file,
 		 * to map that data, so by definition wouldn't allocate it where
 		 * the memory mapping would be containing random other stuff like
 		 * section headers).
+		 *
+		 * HACK: we allow the first page because being able to map the
+		 * ehdr is important.
 		 */
-		if (phdr->p_type == PT_LOAD && !(phdr->p_flags & PF_W))
+		if (phdr->p_type == PT_LOAD &&
+			(!(phdr->p_flags & PF_W)
+				|| (offset == 0 && length <= MIN_PAGE_SIZE)
+			)
+		)
 		{
 			ElfW(Addr) real_end = ROUND_UP(phdr->p_offset + phdr->p_filesz, MIN_PAGE_SIZE);
 			if (phdr->p_offset <= (ElfW(Off)) offset &&
