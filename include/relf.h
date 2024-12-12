@@ -427,7 +427,7 @@ static inline char *my_strchr(const char *s, int c)
 static inline char *environ_getenv(const char *name, char **environ)
 {
 	const char *var;
-	while (NULL != (var = *environ++))
+	while (NULL != (var = *(environ++)))
 	{
 		const char *equals_pos = my_strchr(var, '=');
 		if (!equals_pos || equals_pos == var) continue; // weird string
