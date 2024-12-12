@@ -18,8 +18,8 @@
 #error "librunt.c needs GNU basename() so must not include libgen.h"
 #endif
 
-char *get_exe_fullname(void) __attribute__((visibility("hidden")));
-char *get_exe_fullname(void)
+char *get_exe_command_fullname(void) __attribute__((visibility("hidden")));
+char *get_exe_command_fullname(void)
 {
 	static char exe_fullname[4096];
 	static _Bool tried;
@@ -65,19 +65,35 @@ out:
 	if (exe_fullname[0]) return exe_fullname;
 	else return NULL;
 }
+
+char *get_exe_dynobj_fullname(void) __attribute__((visibility("hidden")));
+char *get_exe_dynobj_fullname(void)
+{
+	static char exe_fullname[4096];
+	static _Bool tried;
+	if (!exe_fullname[0] && !tried)
+	{
+		int ret __attribute__((unused))
+		 = readlink("/proc/self/exe", exe_fullname, sizeof exe_fullname);
+		errno = 0;
+	}
+	if (exe_fullname[0]) return exe_fullname;
+	else return NULL;
+}
+
 /* better name for the public version */
 const char *__runt_get_exe_realpath(void)
-{ return get_exe_fullname(); }
+{ return get_exe_dynobj_fullname(); }
 
-char *get_exe_basename(void) __attribute__((visibility("hidden")));
-char *get_exe_basename(void)
+char *get_exe_command_basename(void) __attribute__((visibility("hidden")));
+char *get_exe_command_basename(void)
 {
 	static char exe_basename[4096];
 	static _Bool tried;
 	if (!exe_basename[0] && !tried)
 	{
 		tried = 1;
-		char *exe_fullname = get_exe_fullname();
+		char *exe_fullname = get_exe_command_fullname();
 		if (exe_fullname)
 		{
 			strncpy(exe_basename, basename(exe_fullname), sizeof exe_basename); // GNU basename
@@ -216,7 +232,7 @@ const char *dynobj_name_from_dlpi_name(const char *dlpi_name, void *dlpi_addr)
 		 * - itself;
 		 * - any others? vdso?
 		 */
-		if (dlpi_addr == 0) return get_exe_fullname();
+		if (dlpi_addr == 0) return get_exe_dynobj_fullname();
 		else
 		{
 			/* HMM -- empty dlpi_name but non-zero load addr.
@@ -240,7 +256,7 @@ const char *dynobj_name_from_dlpi_name(const char *dlpi_name, void *dlpi_addr)
 			{
 				/* This is probably a PIE executable or a shared object
 				 * being interpreted as an executable. */
-				return get_exe_fullname();
+				return get_exe_dynobj_fullname();
 			}
 		}
 	}
