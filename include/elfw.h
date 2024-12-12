@@ -66,12 +66,20 @@
 	ELFW_R_TYPE_y(i, enc)
 #define ELFW_R_TYPE(i) \
 	ELFW_R_TYPE_x(i, __ELF_NATIVE_CLASS)
+
 #define ELFW_R_SYM_y(i, enc) \
 	ELF ## enc ## _R_SYM(i)
 #define ELFW_R_SYM_x(i, enc) \
 	ELFW_R_SYM_y(i, enc)
 #define ELFW_R_SYM(i) \
 	ELFW_R_SYM_x(i, __ELF_NATIVE_CLASS)
+
+#define ELFW_R_INFO_y(s, t, enc) \
+	ELF ## enc ## _R_INFO(s, t)
+#define ELFW_R_INFO_x(s, t, enc) \
+	ELFW_R_INFO_y(s, t, enc)
+#define ELFW_R_INFO(s, t) \
+	ELFW_R_INFO_x(s, t, __ELF_NATIVE_CLASS)
 
 #if defined(we_defined_elf_native_class_)
 #undef __ELF_NATIVE_CLASS
