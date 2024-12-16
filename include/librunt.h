@@ -77,6 +77,9 @@ extern void *__top_of_initial_stack PROTECTED;
  * which is useful for debugging. relf.h conditionally uses this. To do so, check
  * that librunt.h is included before relf.h. */
 #ifdef IN_LIBRUNT_DSO
+char *get_exe_dynobj_fullname(void) __attribute__((visibility("hidden")));
+char *get_exe_dynobj_basename(void) __attribute__((visibility("hidden")));
+char *get_exe_command_basename(void) __attribute__((visibility("hidden")));
 const char *fmt_hex_num(unsigned long n) __attribute__((visibility("hidden")));
 #define write_string(s) raw_write(2, (s), sizeof (s) - 1)
 #define write_chars(s, t)  raw_write(2, s, t - s)
