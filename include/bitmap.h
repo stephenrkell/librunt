@@ -121,6 +121,19 @@ static inline unsigned long bitmap_count_set_b(bitmap_word_t *p_bitmap, bitmap_w
 	return (bitmap_word_t) -1; // FIXME
 }
 
+/* FIXME: iterating over all doesn't make sense if our bitmap is sparse in memory.
+ * Do we have any sparse bitmaps? Probably not yet, but same deal as memtables:
+ * we want a coarser-grained bitmap to tell us which (s)parts are in use. */
+#define BITMAP_FOR_EACH_SET_B(b, nwords, idxvar, thing) \
+    for (bitmap_word_t *p; p != (b) + nwords; ++p) { \
+        bitmap_word _t word = *p; \
+        u/* big-endian means we start with the MSB */ \
+        for (unsigned i = 0; i < BITMAP_WORD_NBITS; word <<= 1, ++i) { \
+            if (word & (0x1u << (BITMAP_WORD_NBITS-1))) { \
+            } \
+        } \
+    }
+
 /**********************************************
  * little-endian functions
  **********************************************/
