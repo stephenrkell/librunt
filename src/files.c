@@ -1,4 +1,15 @@
 #define _GNU_SOURCE
+
+struct file_metadata;
+/* Used to ensure --wrappability of the relevant symbols i.e.
+ * preventing direct self-calls to them.
+ * See note on __runt_files_notify_load below. In short, call
+ * the __wrap_ entry point and not the call itself. */
+struct file_metadata *(__attribute__((warning("do not call __runt_files_notify_load from files.c; use __wrap_*")))
+	__runt_files_notify_load)(void *handle, const void *load_site);
+struct file_metadata *(__attribute__((warning("do not call __runt_files_metadata_by_addr from files.c; use __wrap_*")))
+ __runt_files_metadata_by_addr)(void *addr);
+
 #include <assert.h>
 #include <sys/types.h>
 #include <sys/stat.h>
@@ -17,13 +28,10 @@
 #include "relf.h"
 #include "dso-meta.h"
 #include "vas.h"
+
 #include "librunt_private.h"
 int fstat(int fd, struct stat *buf);
 
-/* Used to ensure --wrappability of the relevant symbols.
- * See note on __runt_files_notify_load below. */
-struct file_metadata *__wrap___runt_files_notify_load(void *handle, const void *load_site);
-struct file_metadata *__wrap___runt_files_metadata_by_addr(void *addr);
 
 /* This file's logic really belongs in the dynamic linker.
  * It is responding to load and unload events.
@@ -137,8 +145,10 @@ static struct file_metadata *metadata_for_addr(void *addr)
 	struct lm_pair *p = lookup_by_addr(addr);
 	return p ? p->fm : NULL;
 }
-struct file_metadata *(__attribute__((warning("do not call __runt_files_metadata_by_addr from files.c; use __wrap_*")))
- __runt_files_metadata_by_addr)(void *addr)
+/* See note above! Don't call this; call its __wrap_ wrapper. If
+ * there's no wrapper we'll --defsym it as an alias. */
+struct file_metadata *__wrap___runt_files_metadata_by_addr(void *addr);
+struct file_metadata *__runt_files_metadata_by_addr(void *addr)
 {
 	if (!initialized) __runt_files_init();
 	return metadata_for_addr(addr);
@@ -153,7 +163,7 @@ struct segments
 };
 static int discover_segments_cb(struct dl_phdr_info *info, size_t size, void *segments_as_void);
 
-struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site);
+struct file_metadata *__wrap___runt_files_notify_load(void *handle, const void *load_site);
 
 void __runt_files_init(void) __attribute__((constructor(102)));
 void __runt_files_init(void)
@@ -276,8 +286,8 @@ static void *get_or_map_file_range(struct file_metadata *file,
  * containing this file, we must --defsym __wrap___runt_files_notify_load=__runt_files_notify_load.
  * FIXME: can I use the .gnu.warning magic to generate a warning if this
  * file calls directly to __runt_files_notify_load? */
-struct file_metadata *(__attribute__((warning("do not call __runt_files_notify_load from files.c; use __wrap_*")))
-	__runt_files_notify_load)(void *handle, const void *load_site)
+struct file_metadata *__wrap__runt_files_notify_load(void *handle, const void *load_site);
+struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site)
 {
 	struct link_map *l = (struct link_map *) handle;
 	const char *tmp = dynobj_name_from_dlpi_name(l->l_name,
