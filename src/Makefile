@@ -3,11 +3,14 @@ LIBRUNT := $(realpath $(dir $(THIS_MAKEFILE))/..)
 SRCROOT := $(dir $(THIS_MAKEFILE))../
 srcdir := $(SRCROOT)/src
 
+TRIPLE ?= $(shell $(CC) $(CFLAGS) -print-multiarch | sed 's/386/686/')
+TRIPLE ?= x86_64-linux-gnu
+CFLAGS := $(CFLAGS) #kill any lazy expansion
 CFLAGS += -DIN_LIBRUNT_DSO
 
+CFLAGS += -I/usr/$(TRIPLE)/include
 CFLAGS += -std=gnu11 -fPIC -Wall -Wextra -g
-CFLAGS += -I../include -I$(SRCROOT)/include -I$(LIBMALLOCHOOKS) \
-   -I$(LIBSYSTRAP) -I$(LIBRUNT)/include -I$(LIBDLBIND)/include -I$(srcdir) -Wno-unused
+CFLAGS += -I$(SRCROOT)/include -I$(srcdir) -Wno-unused
 CFLAGS += -flto -ffat-lto-objects
 CFLAGS += -ffunction-sections   # clients may want to wrap individual functions
 LDFLAGS += -L$(LIBDLBIND)/lib
@@ -35,9 +38,6 @@ vpath %.c $(srcdir)
 
 #%.o:: %.c
 #	$(CC) $(CFLAGS) $(CPPFLAGS) -c -o $@ $<
-
-librunt.so: $(srcdir)/librunt.so
-	cp $< $@
 
 # if we're building from a dir called "debug"
 ifeq ($(notdir $(realpath .)),debug)
@@ -68,7 +68,7 @@ LDFLAGS += -Wl,-O2 -flto -Bsymbolic-functions -fPIC
 
 # different outputs involve different subgroups of objects
 UTIL_OBJS := util.o
-UNWIND_MACHINE ?= $(shell arch="$$( gcc -print-multiarch | sed 's/-.*//' )"; \
+UNWIND_MACHINE ?= $(shell arch="$$( $(CC) $(CFLAGS) -print-multiarch | sed 's/-.*//' )"; \
   case "$$arch" in (i386) echo "x86";; (*) echo "$$arch";; esac )
 ifneq ($(USE_REAL_LIBUNWIND),)
 LDLIBS += -lunwind -lunwind-$(UNWIND_MACHINE)
@@ -154,8 +154,10 @@ endif
 # HACK: would ideally eliminate "dummyweaks" shared object if ld provided a "--dt-useful" option
 # or if we could statically link-in our stubs without making them non-overridable.
 # Perhaps the custom ld.so will make this feasible.
+# HACK: we used to use $(LD) -r, but to simplify passing options that work for the -m32 build,
+# trick the compiler driver into the same effect, with -shared -nostdlib -no-pie -Wl,-r.
 librunt_dummyweaks.o: dummyweaks.o
-	$(LD) -r -o "$@" $+
+	$(CC) $(CFLAGS) -shared -nostdlib -Wl,-r -no-pie -o "$@" $+
 librunt_dummyweaks.so: dummyweaks.o
 	$(CC) $(CFLAGS) -shared -o "$@" $^ $(LDFLAGS)
 
