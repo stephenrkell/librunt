@@ -96,6 +96,14 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
  * is greater than their maximum vaddr, i.e. the unrelocated vaddr passed
  * as 'x'. If 'x' is greater than the base addr, we won't relocate. This
  * is usually correct, but BEWARE... e.g. if low load addrs are in use.
+ *
+ * Back in 32-bit-land, we have a problem. If we approximate limit_vaddr
+ * to 4GB, we will relocate unconditionally. We can tweak the size down
+ * to 1GB, say, but it doesn't really help. What we want is a cheap way
+ * to guesstimate the maximum vaddr for a given object. Getting the phdrs
+ * is not always easy. Or isn't it? In librunt I think we have them. So
+ * it's just in this header, that is supposed to be standalone, where
+ * we have a problem.
  */
 #define RELF_MAYBE_ADJUST3(x, high_base_addr, limit_vaddr) ( \
    ( ((uintptr_t)(x)) < ((uintptr_t)(limit_vaddr)) ) \
