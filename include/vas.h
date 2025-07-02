@@ -19,9 +19,13 @@
 #endif
 
 /* The biggest virtual address that we might find in an executable image. */
-// #define BIGGEST_SANE_EXECUTABLE_VADDR  (1ull<<31)
+#ifdef __x86_64__
 #define BIGGEST_SANE_USER_ALLOC ((1ull<<32)-1ull)
-#define BIGGEST_SANE_DSO_VADDR BIGGEST_SANE_USER_ALLOC
+#else
+/* One quarter of the virtual address space would seem to be big enough. */
+#define BIGGEST_SANE_USER_ALLOC ((1ull<<(WORD_BITSIZE-2))-1)
+#endif
+#define BIGGEST_SANE_DSO_VADDR  BIGGEST_SANE_USER_ALLOC
 
 #define MAXPTR(a, b) \
 	((((uintptr_t)(a)) > ((uintptr_t)(b))) ? (a) : (b))
