@@ -1,7 +1,7 @@
 # replicate the multiarch build we do in libsystrap/contrib/Makefile
 
 .PHONY: default
-TARGETS := $(foreach d,build/opt-i386 build/debug-i386 build/debug-x86_64,$(d)/librunt_preload.a)
+TARGETS := $(foreach d,build/opt-i386 build/debug-i386 build/opt-x86_64 build/debug-x86_64,$(d)/librunt_preload.a)
 $(info TARGETS is $(TARGETS))
 default: $(TARGETS)
 
