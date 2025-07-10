@@ -13,7 +13,6 @@ CFLAGS += -std=gnu11 -fPIC -Wall -Wextra -g
 CFLAGS += -I$(SRCROOT)/include -I$(srcdir) -Wno-unused
 CFLAGS += -flto -ffat-lto-objects
 CFLAGS += -ffunction-sections   # clients may want to wrap individual functions
-LDFLAGS += -L$(LIBDLBIND)/lib
 
 # run-from-srcdir case:
 # if the current dir is the source dir, change to the output directory
