@@ -156,7 +156,7 @@ endif
 # HACK: we used to use $(LD) -r, but to simplify passing options that work for the -m32 build,
 # trick the compiler driver into the same effect, with -shared -nostdlib -no-pie -Wl,-r.
 librunt_dummyweaks.o: dummyweaks.o
-	$(CC) $(CFLAGS) -shared -nostdlib -Wl,-r -no-pie -o "$@" $+
+	$(CC) $(CFLAGS) -shared -nostdlib -fno-lto -Wl,-r -no-pie -o "$@" $+
 librunt_dummyweaks.so: dummyweaks.o
 	$(CC) $(CFLAGS) -shared -o "$@" $^ $(LDFLAGS)
 
