@@ -380,6 +380,7 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	meta->ehdr = get_or_map_file_range(meta, MIN_PAGE_SIZE, fd, 0);
 	if (!meta->ehdr) goto out;
 	assert(0 == memcmp(meta->ehdr, "\177ELF", 4));
+	bzero(meta->build_id, sizeof meta->build_id);
 	size_t shdrs_sz = meta->ehdr->e_shnum * meta->ehdr->e_shentsize;
 	// assert sanity
 #define MAX_SANE_SHDRS_SIZE 512*sizeof(ElfW(Shdr))
@@ -416,6 +417,38 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 				meta->shstrtab = GET_OR_MAP_SCN(i);
 			}
 #undef GET_OR_MAP_SCN
+		}
+		/* Now we have shstrtab if there is one. Re-scan for any section we can
+		 * only recognise by name. */
+		if (meta->shstrtab)
+		{
+			for (unsigned i = 0; i < meta->ehdr->e_shnum; ++i)
+			{
+				if (meta->shdrs[i].sh_type == SHT_NOTE &&
+					0 == strcmp(".note.gnu.build-id", (char*) &meta->shstrtab[meta->shdrs[i].sh_name]))
+				{
+					/* The build ID section begins with 16 bytes of identifier. HACK: just skip
+					 * these. We should check they match the GNU marker. FIXME. */
+					if (meta->shdrs[i].sh_size < 16 + sizeof meta->build_id)
+					{
+						debug_printf(0, "Ignoring .note.gnu.build-id in '%s' that is less than the expected size (16 + %d bytes)\n",
+							l->l_name, (int) sizeof meta->build_id);
+						break;
+					}
+					ssize_t ret = pread(fd, meta->build_id, sizeof meta->build_id, meta->shdrs[i].sh_offset + 16);
+					if (ret != sizeof meta->build_id)
+					{
+						bzero(meta->build_id, sizeof meta->build_id);
+						debug_printf(1, "Failed to read .note.gnu.build-id from '%s'\n", l->l_name);
+					}
+				}
+			}
+		}
+		else
+		{
+			debug_printf(1,
+				"Warning: no shstrtab in '%s' so we cannot scan for named sections (e.g. .note.gnu.build-id)\n",
+				l->l_name);
 		}
 
 		/* Now define sections for all the allocated sections in the shdrs

@@ -66,6 +66,8 @@ struct file_metadata
 	unsigned char *strtab; // NOTE this is strtab, not dynstr
 	ElfW(Half) strtabndx;
 
+	char build_id[20]; // contents of .note.gnu.build-id section, if any (else zeroed)
+
 	/* "Starts" are symbols with length (spans).
 	   We don't index symbols that are not spans.
 	   If we see multiple spans covering the same address, we discard one
