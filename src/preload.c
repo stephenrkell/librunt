@@ -37,6 +37,9 @@ _Bool __avoid_libdl_calls;
 static char *our_dlerror;
 static char *call_orig_dlerror(void);
 
+/* We intercept dlopen() so that we can generate a __runt_files_notify_load() call
+ * in those cases where dlopen() actually succeeds and loads a new file (cf.
+ * just a RTLD_NOLOAD operation or a call that returns an existing handle). */
 void *(*orig_dlopen)(const char *, int) __attribute__((visibility("hidden")));
 void *dlopen(const char *filename, int flag)
 {
@@ -54,6 +57,16 @@ void *dlopen(const char *filename, int flag)
 	__runt_files_init();
 	if (!early_lib_handles[0]) abort();
 
+	/* The in this block is there to detect whether the file we're loading
+	 * is already loaded, and to break early if so. FIXME: why is this necessary?
+	 * It seems we should be able to go ahead with the dlopen() call and figure
+	 * out from that what happened. In fact we already *do* go ahead, and only
+	 * rely on this flag if we get a real link map back. So maybe the right
+	 * thing to do here is snapshot the link map and see if we get a new one.
+	 * Can a ld.so reallocate link maps? No, I don't think so, at least if it
+	 * uses these pointers as the handles returned by dlopen (which we assume
+	 * all over the place). FIXME: replace this with a snapshot-then-diff of
+	 * the link map. Use qsort and bsearch to avoid being quadratic. */
 	void *ret = NULL;
 	_Bool file_already_loaded = 0;
 	/* FIXME: inherently racy, but does any client really race here? */
