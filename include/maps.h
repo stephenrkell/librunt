@@ -22,7 +22,7 @@ int open(const char *pathname, int flags, ...);
  *
  * Then we have some functions:
  * get_a_line really reads a single raw entry into the user's buffer;
- * process_one_maps_entry decodes a raw entry and calls the cb on the decoded entry;
+ * process_one_maps_line decodes a raw entry and calls the cb on the decoded entry;
  * for_each_maps_entry is a loop that interleaves get_a_line with process_one;
  *
  * In trap-syscalls we avoid race conditions by doing it differently: rather
@@ -233,13 +233,42 @@ struct maps_entry
 };
 typedef int maps_cb_t(struct maps_entry *ent, char *linebuf, void *arg);
 
-static inline int process_one_maps_entry(char *linebuf, struct maps_entry *entry_buf,
+static inline
+int read_all_maps_lines_from_fd(int fd, char *linebuf, size_t linebuf_size,
+		char **lines, size_t nlines, char *allbuf, size_t allbuf_size)
+{
+	unsigned n = 0;
+	char *allbuf_pos = allbuf;
+	ssize_t linesz;
+	while (-1 != (linesz = get_a_line_from_maps_fd(linebuf, linebuf_size, fd)))
+	{
+		/* I have seen alloca blow the stack here on 32-bit, so use a static buffer
+		 * that is passed in by the caller (allbuf).
+		 * We simply fill the buffer with all the data we get from get_a_line...(),
+		 * and point lines[i] into it at the start-of-line positions. */
+		//char *a = alloca(linesz + 1);
+		char *start_of_line = allbuf_pos;
+		// if the combined offset exceeds the size of allbuf, we give up
+		if ((allbuf_pos - &allbuf[0]) + linesz + 1 > allbuf_size) return -n;
+		allbuf_pos += (linesz + 1);
+		lines[n] = start_of_line;
+		assert(lines[n]);
+		// copy info allbuf from linebuf
+		strncpy(lines[n], linebuf, linesz);
+		lines[n][linesz] = '\0';
+		++n;
+		if (n == nlines) { n *= -1; break; }
+	}
+	return n; // negative n means we failed to read everything, but got that many lines
+}
+
+static inline int process_one_maps_line(char *linebuf, struct maps_entry *entry_buf_to_fill,
 	maps_cb_t *cb, void *arg)
 {
 #ifdef __FreeBSD__
 	struct kinfo_vmentry *kve = (struct kinfo_vmentry *) linebuf;
 	/* Populate the entry buf with data from the kinfo_vmentry. */
-	*entry_buf = (struct maps_entry) {
+	*entry_buf_to_fill = (struct maps_entry) {
 		.first = kve->kve_start,
 		.second = kve->kve_end,
 		.r = kve->kve_protection & KVME_PROT_READ ? 'r' : '-',
@@ -254,12 +283,12 @@ static inline int process_one_maps_entry(char *linebuf, struct maps_entry *entry
 	};
 #else
 	#define NUM_FIELDS 11
-	entry_buf->rest[0] = '\0';
+	entry_buf_to_fill->rest[0] = '\0';
 	int fields_read = sscanf(linebuf, 
 		"%lx-%lx %c%c%c%c %8x %4x:%4x %d %4095[\x01-\x09\x0b-\xff]\n",
-		&entry_buf->first, &entry_buf->second, &entry_buf->r, &entry_buf->w, &entry_buf->x, 
-		&entry_buf->p, &entry_buf->offset, &entry_buf->devmaj, &entry_buf->devmin, 
-		&entry_buf->inode, entry_buf->rest);
+		&entry_buf_to_fill->first, &entry_buf_to_fill->second, &entry_buf_to_fill->r, &entry_buf_to_fill->w, &entry_buf_to_fill->x,
+		&entry_buf_to_fill->p, &entry_buf_to_fill->offset, &entry_buf_to_fill->devmaj, &entry_buf_to_fill->devmin,
+		&entry_buf_to_fill->inode, entry_buf_to_fill->rest);
 	// to help debugging, print the bad line
 	if (fields_read < (NUM_FIELDS-1))
 	{
@@ -268,7 +297,7 @@ static inline int process_one_maps_entry(char *linebuf, struct maps_entry *entry
 	assert(fields_read >= (NUM_FIELDS-1)); // we might not get a "rest"
 	#undef NUM_FIELDS
 #endif
-	int ret = cb(entry_buf, linebuf, arg);
+	int ret = cb(entry_buf_to_fill /* now filled! */, linebuf, arg);
 	if (ret) return ret;
 	else return 0;
 }
@@ -280,7 +309,7 @@ static inline int for_each_maps_entry(intptr_t handle,
 {
 	while (get_a_line(linebuf, bufsz, handle) != -1)
 	{
-		int ret = process_one_maps_entry(linebuf, entry_buf, cb, arg);
+		int ret = process_one_maps_line(linebuf, entry_buf, cb, arg);
 		if (ret) return ret;
 	}
 	return 0;
