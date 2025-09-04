@@ -41,6 +41,11 @@
 #define PAGENUM(p) (((uintptr_t) (p)) >> LOG_MIN_PAGE_SIZE)
 #define ADDR_OF_PAGENUM(p) ((const void *) ((p) << LOG_MIN_PAGE_SIZE))
 
+#define MIN_HUGEPAGE_SIZE 2097152 /* FIXME: this is sysdep */
+#define COMMON_HUGEPAGE_SIZE 2097152 /* FIXME: this is sysdep */
+#define LOG_MIN_HUGEPAGE_SIZE 21
+#define LOG_COMMON_HUGEPAGE_SIZE 21
+
 /* FIXME: these shouldn't be named RELF_* any more, but
  * I can't remember what namespace collision prompted
  * me to use the protected names. */
