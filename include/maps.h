@@ -226,7 +226,7 @@ struct maps_entry
 {
 	unsigned long first, second;
 	char r, w, x, p;
-	unsigned offset;
+	unsigned long long offset;
 	unsigned devmaj, devmin;
 	unsigned inode;
 	char rest[4096];
@@ -285,7 +285,7 @@ static inline int process_one_maps_line(char *linebuf, struct maps_entry *entry_
 	#define NUM_FIELDS 11
 	entry_buf_to_fill->rest[0] = '\0';
 	int fields_read = sscanf(linebuf, 
-		"%lx-%lx %c%c%c%c %8x %4x:%4x %d %4095[\x01-\x09\x0b-\xff]\n",
+		"%lx-%lx %c%c%c%c %16llx %4x:%4x %d %4095[\x01-\x09\x0b-\xff]\n",
 		&entry_buf_to_fill->first, &entry_buf_to_fill->second, &entry_buf_to_fill->r, &entry_buf_to_fill->w, &entry_buf_to_fill->x,
 		&entry_buf_to_fill->p, &entry_buf_to_fill->offset, &entry_buf_to_fill->devmaj, &entry_buf_to_fill->devmin,
 		&entry_buf_to_fill->inode, entry_buf_to_fill->rest);
