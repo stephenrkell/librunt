@@ -64,11 +64,55 @@ Dl_info dladdr_with_cache(const void *addr)
 	assert(ret != 0);
 
 	/* always cache the dladdr result */
-	dladdr_cache[dladdr_cache_next_free++] = (struct dladdr_cache_rec) { addr, info };
-	if (dladdr_cache_next_free == DLADDR_CACHE_SIZE)
-	{
-		debug_printf(5, "dladdr cache wrapped around\n");
-		dladdr_cache_next_free = 0;
+#define CACHE_ENTRY(addr, info) \
+	dladdr_cache[dladdr_cache_next_free++] = (struct dladdr_cache_rec) { (addr), (info) }; \
+	if (dladdr_cache_next_free == DLADDR_CACHE_SIZE) \
+	{ \
+		debug_printf(5, "dladdr cache wrapped around\n"); \
+		dladdr_cache_next_free = 0; \
 	}
+	CACHE_ENTRY(addr, info)
+	return info;
+}
+
+Dl_info fake_dladdr_with_cache(const void *addr)
+{
+	/* We are like dladdr but we don't run the underlying dladdr function.
+	 * Instead we use librunt's own metadata.
+	 * We share a cache with dladdr_with_cache.
+	 *
+	 * One benefit of this function, over ordinary dladdr(), is that it guarantees
+	 * not to call malloc. */
+
+	struct file_metadata *fm = __runt_files_metadata_by_addr((void*) addr);
+	Dl_info info;
+	bzero(&info, sizeof info);
+	if (fm)
+	{
+		info.dli_fname = fm->filename;
+		info.dli_fbase = (void*) fm->l->l_addr;
+		/* We just do a linear search for a containing symbol. */
+		ElfW(Sym) *found = NULL;
+#define LINEAR_LOOKUP_IN_SYMTAB(symtab, symtab_shidx, strtab) \
+			found = symbol_lookup_linear_by_vaddr_contained( \
+				(symtab), \
+				(symtab) + fm->shdrs[(symtab_shidx)].sh_size / fm->shdrs[(symtab_shidx)].sh_entsize, \
+				(uintptr_t) addr - fm->l->l_addr); \
+			if (found) \
+			{ \
+				info.dli_sname = (void*)(&(strtab)[found->st_name]); \
+				info.dli_saddr = (void*)(info.dli_fbase + found->st_value); \
+			}
+
+		if (fm->dynsym && fm->shdrs && fm->dynsymndx)
+		{
+			LINEAR_LOOKUP_IN_SYMTAB(fm->dynsym, fm->dynsymndx, fm->dynstr)
+		}
+		if (!found && fm->symtab && fm->shdrs && fm->symtabndx)
+		{
+			LINEAR_LOOKUP_IN_SYMTAB(fm->symtab, fm->symtabndx, fm->strtab)
+		}
+	}
+	CACHE_ENTRY(addr, info)
 	return info;
 }

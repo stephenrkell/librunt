@@ -33,6 +33,7 @@ typedef struct {
 extern const char __ldso_name[] PROTECTED;
 /* We define a dladdr that caches stuff. */
 Dl_info dladdr_with_cache(const void *addr) PROTECTED;
+Dl_info fake_dladdr_with_cache(const void *addr) PROTECTED; /* does not malloc */
 struct dl_phdr_info;
 int dl_for_one_object_phdrs(void *handle,
 	int (*callback) (struct dl_phdr_info *info, size_t size, void *data),
