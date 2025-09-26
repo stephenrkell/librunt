@@ -1038,6 +1038,41 @@ ElfW(Sym) *symbol_lookup_linear(ElfW(Sym) *symtab, ElfW(Sym) *symtab_end,
 	return found_sym;
 }
 
+
+static inline
+ElfW(Sym) *symbol_lookup_linear_by_vaddr_greatest_le(ElfW(Sym) *symtab, ElfW(Sym) *symtab_end,
+	unsigned long long vaddr)
+{
+	ElfW(Sym) *found_greatest_le = NULL;
+	for (ElfW(Sym) *p_sym = &symtab[0]; p_sym <= symtab_end; ++p_sym)
+	{
+		if (p_sym->st_value <= vaddr &&
+				(!found_greatest_le || found_greatest_le->st_value < p_sym->st_value))
+		{
+			/* match */
+			found_greatest_le = p_sym;
+			if (found_greatest_le->st_value == vaddr) break; // can't do better than an exact hit
+		}
+	}
+	return found_greatest_le;
+}
+
+static inline
+ElfW(Sym) *symbol_lookup_linear_by_vaddr_contained(ElfW(Sym) *symtab, ElfW(Sym) *symtab_end,
+	unsigned long long vaddr)
+{
+	ElfW(Sym) *found_containing = NULL;
+	for (ElfW(Sym) *p_sym = &symtab[0]; p_sym <= symtab_end; ++p_sym)
+	{
+		if (p_sym->st_value <= vaddr && p_sym->st_value + p_sym->st_size > vaddr)
+		{
+			/* match */
+			found_containing = p_sym;
+			break;
+		}
+	}
+	return found_containing;
+}
 static inline 
 uintptr_t guess_page_size_unsafe(void)
 {
