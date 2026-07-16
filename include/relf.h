@@ -413,7 +413,14 @@ struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
 	return lims;
 }
 
-static inline int my_strcmp(const char *str1, const char *str2)
+/* These are nasty. We include our own strcmp and strchr so that we can search environment
+ * strings without being dependent on dynamically linked libc functions. Similarly we have
+ * a way to search environment strings located not via the global 'environ'. This is so that
+ * we can run very early. The only code that uses this, to my knowledge, is in liballocs
+ * (pageindex.c). I thought about moving them to liballocs but have decided to leave these
+ * here for now... since we deal with auxv, we deal with environment strings and we are
+ * intending to cater to "sensitive contexts" where libc functions aren't available. */
+static inline int relf_strcmp_(const char *str1, const char *str2)
 {
 	signed diff;
 	while (1)
@@ -427,7 +434,7 @@ static inline int my_strcmp(const char *str1, const char *str2)
 	if (!*str2 && *str1) return 1;
 	return diff;
 }
-static inline char *my_strchr(const char *s, int c)
+static inline char *relf_strchr_(const char *s, int c)
 {
 	while (*s && *s != c) ++s;
 	if (*s == c) return (char*) s;
@@ -438,9 +445,9 @@ static inline char *environ_getenv(const char *name, char **environ)
 	const char *var;
 	while (NULL != (var = *(environ++)))
 	{
-		const char *equals_pos = my_strchr(var, '=');
+		const char *equals_pos = relf_strchr_(var, '=');
 		if (!equals_pos || equals_pos == var) continue; // weird string
-		if (0 == my_strcmp(name, equals_pos - 1))
+		if (0 == relf_strcmp_(name, equals_pos - 1))
 		{
 			// hit!
 			return (char*)(equals_pos + 1);
@@ -766,7 +773,7 @@ unsigned long dynamic_symbol_count_fast(ElfW(Sym) *dynsym, unsigned char *dynstr
 	if (!dynsym || !dynstr) return 0;
 	/* dynsym_nasty_hack */
 	/* Take a wild guess, by assuming dynstr directly follows dynsym. */
-	if (!((unsigned char *) dynstr > (unsigned char *) dynsym)) __assert_fail("dynstr position assumption", __FILE__, __LINE__, __func__);
+	if (!((uintptr_t) dynstr > (uintptr_t) dynsym)) __assert_fail("dynstr position assumption", __FILE__, __LINE__, __func__);
 	// round down, because dynsym might be padded
 	return ((unsigned char *) dynstr - (unsigned char *) dynsym) / sizeof (ElfW(Sym));
 }
