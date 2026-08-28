@@ -285,7 +285,13 @@ static void *get_or_map_file_range(struct file_metadata *file,
  * ensure it's called on an undefined symbol. So when building a DSO
  * containing this file, we must --defsym __wrap___runt_files_notify_load=__runt_files_notify_load.
  * FIXME: can I use the .gnu.warning magic to generate a warning if this
- * file calls directly to __runt_files_notify_load? */
+ * file calls directly to __runt_files_notify_load? Perhaps by setting
+ * the asm name of __runt_files_notify_load?
+ *
+ * TODO: lift out of this a generic visit_elf_metadata (felf.h? lifting any
+ * file-level stuff out of relf.h). This would not assume that we have a
+ * link map entry... ELF header and program headers initially. Take a
+ * callback for get_or_map. */
 struct file_metadata *__wrap__runt_files_notify_load(void *handle, const void *load_site);
 struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site)
 {
@@ -368,7 +374,9 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	 * parts of the file. */
 	/* FIXME: we'd much rather not do open() on l->l_name (race condition) --
 	 * if we had the original fd that was exec'd, that would be great. If we
-	 * were in a libgerald- */
+	 * were in a libgerald-like ld.so extension context we could do this. *OR*
+	 * very recent glibc ld.so will support AT_EXECFD: see
+	 * https://inbox.sourceware.org/libc-alpha/20260715-work-glibc-binfmt_misc-v1-0-b3b14336e664@kernel.org/ */
 	int fd = __reopen_file(meta->filename);
 	if (fd < 0)
 	{
