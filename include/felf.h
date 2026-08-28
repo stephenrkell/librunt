@@ -1,6 +1,17 @@
 #ifndef FELF_H_
 #define FELF_H_
 
+/* felf.h: helpers for working with ELF files.
+ *
+ * Unlike relf.h, routines in this file don't assume that the ELF file
+ * in question is loaded (e.g. by the dynamic linker of the current process).
+ * We could just be working as a tool on the file.
+ *
+ * Unlike relf.h, we don't use ElfW(...) because we might be
+ * working on either bit-width, regardless of machine. Instead
+ * we use C11 _Generic. We try to avoid repeating the bodies of
+ * functions, for larger functions.
+ */
 #ifdef __cplusplus
 extern "C" {
 typedef bool _Bool;
@@ -8,6 +19,7 @@ typedef bool _Bool;
 
 #include <stddef.h> /* for offsetof */
 #include <stdint.h>
+#include <string.h>
 #include <elf.h>
 
 #if __STDC_VERSION__ >= 201112L
@@ -32,11 +44,6 @@ throw()
 #endif
 ;
 
-/* Unlike relf.h, we don't use ElfW(...) because we might be
- * working on either bit-width, regardless of machine. Instead
- * we use C11 _Generic.
- *
- * XXX: can we avoid repeating the function bodies? It gets ugly.... */
 static inline
 Elf32_Dyn *dynamic_lookup_32(Elf32_Dyn *d, Elf32_Sword tag)
 {
@@ -180,7 +187,7 @@ hash_lookup_body_(elft32_, elff32_)
 static inline
 Elf64_Sym *hash_lookup_64(Elf64_Word *hash, Elf64_Sym *symtab, const unsigned char *strtab, const char *sym)
 hash_lookup_body_(elft64_, elff64_)
-#define hash_lookup(h, symtab, strtab, sym)   _Generic( (symtab), \
+#define hash_lookup(hash, symtab, strtab, sym)   _Generic( (symtab), \
    Elf32_Sym* : hash_lookup_32, \
    Elf64_Sym* : hash_lookup_64  ) \
    ((hash), (symtab), (strtab), (sym))
