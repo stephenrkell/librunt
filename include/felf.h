@@ -513,6 +513,127 @@ Elf64_Sym *symbol_lookup_linear_by_vaddr_contained_64(Elf64_Sym *symtab, Elf64_S
    Elf64_Sym* : symbol_lookup_linear_by_vaddr_contained_64 ) \
    ((symtab), (symtab_end), (vaddr))
 
+
+	/* Given a file for which we have the ELF header (just the value)
+	 * and program headers (don't assume they must be mapped?),
+	 * get the symbol tables, string tables, section headers, GNU build ID,
+	 * dynamic section, ...
+	 *
+	 * Is one big visitor a good API? It deals with the fact that one thing can
+	 * point to another.
+	 *
+	 * But why stop with the above choices of metadata? e.g. why not relocations?
+	 * Maybe we should be defining a "follow" predicate? Each thing we visit
+	 * can have some defined "what to follow" which will prnue the exploration.
+	 *
+	 * This is a lot like exploration of a graph, whether breadth-first or
+	 * depth-first, with some custom predicate over which nodes or edges to explore.
+	 *
+	 * Why require the ehdr and phdrs? Just read the ehdr using get_or_map cb and
+	 * work from there? */
+	enum {
+		ELF_VISIT_EHDR = 1 << 0,
+		ELF_VISIT_PHDRS = 1 << 1,
+		ELF_VISIT_SHDRS = 1 << 2, /* if you want the names, you have to snarf e_shstrndx from the ehdr */
+		ELF_VISIT_DYNAMIC = 1 << 3,
+		ELF_VISIT_DYNSYM = 1 << 4, /* if you want the string table, you have to snarf the dynamic section */
+		ELF_VISIT_SYMTAB = 1 << 5, /* if you want the string table, you have to snarf the shdrs */
+		ELF_VISIT_DYNREL = 1 << 6,
+		ELF_VISIT_REL = 1 << 7,
+		ELF_VISIT_BUILD_ID = 1 << 8 /* ,
+			ELF_VISIT_PROGBITS,
+			ELF_VISIT_NOBITS, ...?
+			Maybe we should just let it visit the section headers,
+			and if the section contents are of interest, the callback
+			can act then.
+		*/
+	};
+	// XXX: don't want to use ElfW here!
+	typedef long elf_visit_cb_32(unsigned long kind, void *data, size_t datasz, Elf32_Off fileoff, Elf32_Addr vaddr, Elf32_Shdr *shdr_if_applicable, void *auxdata_if_applicable, void *arg);
+	typedef long elf_visit_cb_64(unsigned long kind, void *data, size_t datasz, Elf64_Off fileoff, Elf64_Addr vaddr, Elf64_Shdr *shdr_if_applicable, void *auxdata_if_applicable, void *arg);
+	typedef void *elf_get_or_map_cb(off_t fileoff, size_t len, void *arg);
+
+static inline long
+visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg, elf_get_or_map_cb *get_or_map, void *get_or_map_arg)
+{
+	/* Traverse what we know how to traverse, calling the callback if the user has so requested. */
+	
+	/* 0. ELF header */
+	Elf64_Ehdr *ehdr = get_or_map(0, /*PAGE_SIZE*//*sysconf(_SC_PAGE_SIZE)*/ 4096, get_or_map_arg);
+	if (!ehdr) return -ELF_VISIT_EHDR;
+	if (to_visit & ELF_VISIT_EHDR) visit_cb(ELF_VISIT_EHDR, ehdr, ehdr->e_ehsize, 0, (Elf64_Addr)-1, NULL, NULL, visit_arg);
+
+	/* 1. program headers */
+	Elf64_Phdr *phdrs = get_or_map(ehdr->e_phoff, ehdr->e_phnum * ehdr->e_phentsize, get_or_map_arg);
+	// XX: bootstrapping problem: get_or_map is supposed to know what is mapped already.
+	// but the phdrs, for a loaded object, are already mapped, yet we don't know what addresses
+	// that consists of. so we can't know whether we need to map. Need another way to start things off?
+	// Actually I think that knowledge can live in get_or_map. It is primed with the program headers
+	// out-of-band. That can be via a copy, whereas the pointer we get above is always to a mapping.
+
+	if (!phdrs) return -ELF_VISIT_PHDRS;
+	if (to_visit & ELF_VISIT_PHDRS) visit_cb(ELF_VISIT_PHDRS, phdrs, ehdr->e_phnum * ehdr->e_phentsize, ehdr->e_phoff, (Elf64_Addr)-1, NULL, ehdr, visit_arg);
+
+	/* 2. section headers */
+	Elf64_Shdr *shdrs = get_or_map(ehdr->e_shoff, ehdr->e_shnum * ehdr->e_shentsize, get_or_map_arg);
+	if (!shdrs) return -ELF_VISIT_SHDRS;
+	// we pull out shstrtab data as the auxdata
+	char *shstrtab = ehdr->e_shstrndx ? get_or_map(shdrs[ehdr->e_shstrndx].sh_offset, shdrs[ehdr->e_shstrndx].sh_size, get_or_map_arg) : NULL;
+	if (to_visit & ELF_VISIT_SHDRS) visit_cb(ELF_VISIT_SHDRS, shdrs, ehdr->e_shnum * ehdr->e_shentsize, ehdr->e_shoff, (Elf64_Addr)-1, &shdrs[ehdr->e_shstrndx], ehdr, visit_arg);
+
+	/* 3. dynamic section */
+#define find_shdr_of_type(t) \
+    ({ Elf64_Shdr *shdr = NULL; \
+       for (unsigned i = 1; i < ehdr->e_shnum; ++i) { \
+         if (shdrs[i].sh_type == (t)) { shdr = &shdrs[i]; break; } \
+       }; shdr; })
+	Elf64_Shdr *dyn_shdr = find_shdr_of_type(SHT_DYNAMIC);
+	if (dyn_shdr && (to_visit & ELF_VISIT_DYNAMIC))
+	{
+		Elf64_Dyn *dyn = get_or_map(dyn_shdr->sh_offset, dyn_shdr->sh_size, get_or_map_arg);
+		visit_cb(ELF_VISIT_DYNAMIC, dyn, dyn_shdr->sh_size, dyn_shdr->sh_offset, dyn_shdr->sh_addr, dyn_shdr, NULL, visit_arg);
+	}
+
+	Elf64_Shdr *dynsym_shdr = find_shdr_of_type(SHT_DYNSYM);
+	if (dynsym_shdr && (to_visit & ELF_VISIT_DYNSYM))
+	{
+		Elf64_Shdr* dynstr_shdr = &shdrs[dynsym_shdr->sh_link];
+		char *dynstr = get_or_map(dynstr_shdr->sh_offset, dynstr_shdr->sh_size, get_or_map_arg);
+		Elf64_Sym *dynsym = get_or_map(dynsym_shdr->sh_offset, dynsym_shdr->sh_size, get_or_map_arg);
+		visit_cb(ELF_VISIT_DYNSYM, dynsym, dynsym_shdr->sh_size, dynsym_shdr->sh_offset, dynsym_shdr->sh_addr, dynsym_shdr, dynstr, visit_arg);
+	}
+
+	Elf64_Shdr *symtab_shdr = find_shdr_of_type(SHT_SYMTAB);
+	if (symtab_shdr && (to_visit & ELF_VISIT_SYMTAB))
+	{
+		Elf64_Shdr* strtab_shdr = &shdrs[symtab_shdr->sh_link];
+		char *strtab = get_or_map(strtab_shdr->sh_offset, strtab_shdr->sh_size, get_or_map_arg) ;
+		Elf64_Sym *symtab = get_or_map(symtab_shdr->sh_offset, symtab_shdr->sh_size, get_or_map_arg);
+		visit_cb(ELF_VISIT_SYMTAB, symtab, symtab_shdr->sh_size, symtab_shdr->sh_offset, symtab_shdr->sh_addr, symtab_shdr, strtab, visit_arg);
+	}
+
+	// FIXME: do rel
+
+	/* Now we have shstrtab if there is one. Re-scan for any section we can
+	 * only recognise by name. */
+	if (shstrtab)
+	{
+	#define find_shdr_of_name(n) \
+    ({ Elf64_Shdr *shdr = NULL; \
+       for (unsigned i = 1; i < ehdr->e_shnum; ++i) { \
+         if (0 == strcmp(&shstrtab[shdrs[i].sh_name], (n))){ shdr = &shdrs[i]; break; } \
+       }; shdr; })
+		Elf64_Shdr *build_id_shdr = find_shdr_of_name(".note.gnu.build-id");
+		if (build_id_shdr->sh_type == SHT_NOTE
+				 && ELF_VISIT_BUILD_ID)
+		{
+			unsigned char *build_id_data = get_or_map(build_id_shdr->sh_offset, build_id_shdr->sh_size, get_or_map_arg);
+			visit_cb(ELF_VISIT_BUILD_ID, build_id_data, build_id_shdr->sh_size, build_id_shdr->sh_offset, build_id_shdr->sh_addr, build_id_shdr, NULL, visit_arg);
+		}
+	}
+	return 0;
+}
+
 #ifdef __cplusplus
 }
 #endif
