@@ -11,6 +11,16 @@
  * working on either bit-width, regardless of machine. Instead
  * we use C11 _Generic. We try to avoid repeating the bodies of
  * functions, for larger functions.
+ *
+ * PROBLEM: _Generic isn't valid C++ and isn't parsed by g++.
+ * So we have to write our macros s.t. overloading gets used when
+ * __cplusplus is defined.
+ *
+ * PROBLEM PROBLEM: we used to wrap everything in extern "C", but then
+ * the compiler disables overloading for these functions. So we need
+ * not to wrap everything in extern "C"... for most of the file we
+ * are only defining static inlines, so the name-mangling issue does
+ * not apply.
  */
 #ifdef __cplusplus
 extern "C" {
@@ -44,6 +54,19 @@ throw()
 #endif
 ;
 
+#ifdef __cplusplus
+}
+#endif
+
+#ifdef __cplusplus
+#define dynamic_lookup_32 dynamic_lookup
+#define dynamic_lookup_64 dynamic_lookup
+#else
+#define dynamic_lookup(d, tag)   _Generic( (d), \
+   Elf32_Dyn* : dynamic_lookup_32, \
+   Elf64_Dyn* : dynamic_lookup_64  ) \
+   ((d), (tag))
+#endif
 static inline
 Elf32_Dyn *dynamic_lookup_32(Elf32_Dyn *d, Elf32_Sword tag)
 {
@@ -68,11 +91,16 @@ Elf64_Dyn *dynamic_lookup_64(Elf64_Dyn *d, Elf64_Sword tag)
 	}
 	return NULL;
 }
-#define dynamic_lookup(d, tag)   _Generic( (d), \
-   Elf32_Dyn* : dynamic_lookup_32, \
-   Elf64_Dyn* : dynamic_lookup_64  ) \
-   ((d), (tag))
 
+#ifdef __cplusplus
+#define dynamic_xlookup_32 dynamic_xlookup
+#define dynamic_xlookup_64 dynamic_xlookup
+#else
+#define dynamic_xlookup(d, tag)   _Generic( (d), \
+   Elf32_Dyn* : dynamic_xlookup_32, \
+   Elf64_Dyn* : dynamic_xlookup_64  ) \
+   ((d), (tag))
+#endif
 static inline
 Elf32_Dyn *dynamic_xlookup_32(Elf32_Dyn *dyn, Elf32_Sword tag)
 {
@@ -87,10 +115,6 @@ Elf64_Dyn *dynamic_xlookup_64(Elf64_Dyn *dyn, Elf64_Sword tag)
 	if (!found) __assert_fail("expected dynamic tag", __FILE__, __LINE__, __func__);
 	return found;
 }
-#define dynamic_xlookup(d, tag)   _Generic( (d), \
-   Elf32_Dyn* : dynamic_xlookup_32, \
-   Elf64_Dyn* : dynamic_xlookup_64  ) \
-   ((d), (tag))
 
 static inline 
 unsigned long
@@ -124,6 +148,15 @@ elf32_hash(const unsigned char *name)
 	return h;
 }
 
+#ifdef __cplusplus
+#define dynamic_symbol_count_fast_32 dynamic_symbol_count_fast
+#define dynamic_symbol_count_fast_64 dynamic_symbol_count_fast
+#else
+#define dynamic_symbol_count_fast(dynsym, dynstr, sysv_hash)  _Generic( (dynsym), \
+   Elf32_Sym* : dynamic_symbol_count_fast_32, \
+   Elf64_Sym* : dynamic_symbol_count_fast_64  ) \
+   ((dynsym), (dynstr), (sysv_hash))
+#endif
 static inline
 unsigned long dynamic_symbol_count_fast_32(Elf32_Sym *dynsym, unsigned char *dynstr, Elf32_Word *sysv_hash)
 {
@@ -147,11 +180,15 @@ unsigned long dynamic_symbol_count_fast_64(Elf64_Sym *dynsym, unsigned char *dyn
 	return ((unsigned char *) dynstr - (unsigned char *) dynsym) / sizeof (Elf64_Sym);
 }
 
-#define dynamic_symbol_count_fast(dynsym, dynstr, sysv_hash)  _Generic( (dynsym), \
-   Elf32_Sym* : dynamic_symbol_count_fast_32, \
-   Elf64_Sym* : dynamic_symbol_count_fast_64  ) \
-   ((dynsym), (dynstr), (sysv_hash))
-
+#ifdef __cplusplus
+#define hash_lookup_32 hash_lookup
+#define hash_lookup_64 hash_lookup
+#else
+#define hash_lookup(hash, symtab, strtab, sym)   _Generic( (symtab), \
+   Elf32_Sym* : hash_lookup_32, \
+   Elf64_Sym* : hash_lookup_64  ) \
+   ((hash), (symtab), (strtab), (sym))
+#endif
 #define elft32_(frag) Elf32_ ## frag
 #define elft64_(frag) Elf64_ ## frag
 #define elff32_(frag) elf32_ ## frag
@@ -187,11 +224,16 @@ hash_lookup_body_(elft32_, elff32_)
 static inline
 Elf64_Sym *hash_lookup_64(Elf64_Word *hash, Elf64_Sym *symtab, const unsigned char *strtab, const char *sym)
 hash_lookup_body_(elft64_, elff64_)
-#define hash_lookup(hash, symtab, strtab, sym)   _Generic( (symtab), \
-   Elf32_Sym* : hash_lookup_32, \
-   Elf64_Sym* : hash_lookup_64  ) \
-   ((hash), (symtab), (strtab), (sym))
 
+#ifdef __cplusplus
+#define hash_walk_syms_32 hash_walk_syms
+#define hash_walk_syms_64 hash_walk_syms
+#else
+#define hash_walk_syms(h, cb, symtab, arg)   _Generic( (symtab), \
+   Elf32_Sym* : hash_walk_syms_32, \
+   Elf64_Sym* : hash_walk_syms_64  ) \
+   ((h), (cb), (symtab), (arg))
+#endif
 #define hash_walk_syms_body_(tmac) \
 { \
 	tmac(Word) nbucket = hash[0]; \
@@ -218,10 +260,6 @@ hash_walk_syms_body_(elft32_)
 static inline
 int hash_walk_syms_64(Elf64_Word *hash, int (*cb)(Elf64_Sym *, void *), Elf64_Sym *symtab, void *arg) \
 hash_walk_syms_body_(elft64_)
-#define hash_walk_syms(h, cb, symtab, arg)   _Generic( (symtab), \
-   Elf32_Sym* : hash_walk_syms_32, \
-   Elf64_Sym* : hash_walk_syms_64  ) \
-   ((h), (cb), (symtab), (arg))
 
 static inline uint_fast32_t
 dl_new_hash(const char *s)
@@ -234,6 +272,15 @@ dl_new_hash(const char *s)
 	return h & 0xffffffff;
 }
 
+#ifdef __cplusplus
+#define gnu_hash_lookup_32 gnu_hash_lookup
+#define gnu_hash_lookup_64 gnu_hash_lookup
+#else
+#define gnu_hash_lookup(gnu_hash, symtab, strtab, sym)   _Generic( (symtab), \
+   Elf32_Sym* : gnu_hash_lookup_32, \
+   Elf64_Sym* : gnu_hash_lookup_64 ) \
+   ((gnu_hash), (symtab), (strtab), (sym))
+#endif
 #define gnu_hash_lookup_body_(tmac) \
 { \
 	tmac(Sym) *found_sym = NULL; \
@@ -349,11 +396,16 @@ gnu_hash_lookup_body_(elft32_)
 static inline
 Elf64_Sym *gnu_hash_lookup_64(Elf64_Word *gnu_hash, Elf64_Sym *symtab, const unsigned char *strtab, const char *sym)
 gnu_hash_lookup_body_(elft64_)
-#define gnu_hash_lookup(gnu_hash, symtab, strtab, sym)   _Generic( (symtab), \
-   Elf32_Sym* : gnu_hash_lookup_32, \
-   Elf64_Sym* : gnu_hash_lookup_64 ) \
-   ((gnu_hash), (symtab), (strtab), (sym))
 
+#ifdef __cplusplus
+#define gnu_hash_walk_syms_32 gnu_hash_walk_syms
+#define gnu_hash_walk_syms_64 gnu_hash_walk_syms
+#else
+#define gnu_hash_walk_syms(gnu_hash, cb, symtab, strtab, arg)   _Generic( (symtab), \
+   Elf32_Sym* : gnu_hash_walk_syms_32, \
+   Elf64_Sym* : gnu_hash_walk_syms_64 ) \
+   ((gnu_hash), (cb), (symtab), (strtab), (arg))
+#endif
 #define gnu_hash_walk_syms_body_(tmac) \
 { \
 	uint32_t *gnu_hash_words = (uint32_t *) gnu_hash; \
@@ -387,10 +439,6 @@ gnu_hash_walk_syms_body_(elft32_)
 static inline
 int gnu_hash_walk_syms_64(Elf64_Word *gnu_hash, int (*cb)(Elf64_Sym *, void *), Elf64_Sym *symtab, unsigned char *strtab, void *arg)
 gnu_hash_walk_syms_body_(elft64_)
-#define gnu_hash_walk_syms(gnu_hash, cb, symtab, strtab, arg)   _Generic( (symtab), \
-   Elf32_Sym* : gnu_hash_walk_syms_32, \
-   Elf64_Sym* : gnu_hash_walk_syms_64 ) \
-   ((gnu_hash), (cb), (symtab), (strtab), (arg))
 
 static inline
 Elf32_Sym *symbol_lookup_linear_32(Elf32_Sym *symtab, Elf32_Sym *symtab_end,
@@ -412,6 +460,15 @@ Elf32_Sym *symbol_lookup_linear_32(Elf32_Sym *symtab, Elf32_Sym *symtab_end,
 	return found_sym;
 }
 
+#ifdef __cplusplus
+#define symbol_lookup_linear_32 symbol_lookup_linear
+#define symbol_lookup_linear_64 symbol_lookup_linear
+#else
+#define symbol_lookup_linear(symtab, symtab_end, strtab, strtab_end, sym) _Generic( (symtab), \
+   Elf32_Sym* : symbol_lookup_linear_32, \
+   Elf64_Sym* : symbol_lookup_linear_64 ) \
+   ((symtab), (symtab_end), (strtab), (strtab_end), (sym))
+#endif
 static inline
 Elf64_Sym *symbol_lookup_linear_64(Elf64_Sym *symtab, Elf64_Sym *symtab_end,
 	const unsigned char *strtab, const unsigned char *strtab_end, const char *sym)
@@ -431,10 +488,6 @@ Elf64_Sym *symbol_lookup_linear_64(Elf64_Sym *symtab, Elf64_Sym *symtab_end,
 	
 	return found_sym;
 }
-#define symbol_lookup_linear(symtab, symtab_end, strtab, strtab_end, sym) _Generic( (symtab), \
-   Elf32_Sym* : symbol_lookup_linear_32, \
-   Elf64_Sym* : symbol_lookup_linear_64 ) \
-   ((symtab), (symtab_end), (strtab), (strtab_end), (sym))
 
 static inline
 Elf32_Sym *symbol_lookup_linear_by_vaddr_greatest_le_32(Elf32_Sym *symtab, Elf32_Sym *symtab_end,
@@ -454,6 +507,15 @@ Elf32_Sym *symbol_lookup_linear_by_vaddr_greatest_le_32(Elf32_Sym *symtab, Elf32
 	return found_greatest_le;
 }
 
+#ifdef __cplusplus
+#define symbol_lookup_linear_by_vaddr_greatest_le_32 symbol_lookup_linear_by_vaddr_greatest_le
+#define symbol_lookup_linear_by_vaddr_greatest_le_64 symbol_lookup_linear_by_vaddr_greatest_le
+#else
+#define symbol_lookup_linear_by_vaddr_greatest_le(symtab, symtab_end, vaddr) _Generic( (symtab), \
+   Elf32_Sym* : symbol_lookup_linear_by_vaddr_greatest_le_32, \
+   Elf64_Sym* : symbol_lookup_linear_by_vaddr_greatest_le_64 ) \
+   ((symtab), (symtab_end), (vaddr))
+#endif
 static inline
 Elf64_Sym *symbol_lookup_linear_by_vaddr_greatest_le_64(Elf64_Sym *symtab, Elf64_Sym *symtab_end,
 	unsigned long long vaddr)
@@ -471,11 +533,16 @@ Elf64_Sym *symbol_lookup_linear_by_vaddr_greatest_le_64(Elf64_Sym *symtab, Elf64
 	}
 	return found_greatest_le;
 }
-#define symbol_lookup_linear_by_vaddr_greatest_le(symtab, symtab_end, vaddr) _Generic( (symtab), \
-   Elf32_Sym* : symbol_lookup_linear_by_vaddr_greatest_le_32, \
-   Elf64_Sym* : symbol_lookup_linear_by_vaddr_greatest_le_64 ) \
-   ((symtab), (symtab_end), (vaddr))
 
+#ifdef __cplusplus
+#define symbol_lookup_linear_by_vaddr_contained_32 symbol_lookup_linear_by_vaddr_contained
+#define symbol_lookup_linear_by_vaddr_contained_64 symbol_lookup_linear_by_vaddr_contained
+#else
+#define symbol_lookup_linear_by_vaddr_contained(symtab, symtab_end, vaddr) _Generic( (symtab), \
+   Elf32_Sym* : symbol_lookup_linear_by_vaddr_contained_32, \
+   Elf64_Sym* : symbol_lookup_linear_by_vaddr_contained_64 ) \
+   ((symtab), (symtab_end), (vaddr))
+#endif
 static inline
 Elf32_Sym *symbol_lookup_linear_by_vaddr_contained_32(Elf32_Sym *symtab, Elf32_Sym *symtab_end,
 	unsigned long long vaddr)
@@ -508,10 +575,6 @@ Elf64_Sym *symbol_lookup_linear_by_vaddr_contained_64(Elf64_Sym *symtab, Elf64_S
 	}
 	return found_containing;
 }
-#define symbol_lookup_linear_by_vaddr_contained(symtab, symtab_end, vaddr) _Generic( (symtab), \
-   Elf32_Sym* : symbol_lookup_linear_by_vaddr_contained_32, \
-   Elf64_Sym* : symbol_lookup_linear_by_vaddr_contained_64 ) \
-   ((symtab), (symtab_end), (vaddr))
 
 
 	/* Given a file for which we have the ELF header (just the value)
@@ -633,9 +696,5 @@ visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg,
 	}
 	return 0;
 }
-
-#ifdef __cplusplus
-}
-#endif
 
 #endif /* FELF_H_ */

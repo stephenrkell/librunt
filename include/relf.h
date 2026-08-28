@@ -2,6 +2,11 @@
 #define RELF_H_
 
 #include <felf.h> /* file-level helpers, not reflective / dynamic-linking helpers */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
 #include "elfw.h"
 #include "vas.h"
 
