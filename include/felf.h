@@ -622,12 +622,12 @@ visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg,
 	/* Traverse what we know how to traverse, calling the callback if the user has so requested. */
 	
 	/* 0. ELF header */
-	Elf64_Ehdr *ehdr = get_or_map(0, /*PAGE_SIZE*//*sysconf(_SC_PAGE_SIZE)*/ 4096, get_or_map_arg);
+	Elf64_Ehdr *ehdr = (Elf64_Ehdr*) get_or_map(0, /*PAGE_SIZE*//*sysconf(_SC_PAGE_SIZE)*/ 4096, get_or_map_arg);
 	if (!ehdr) return -ELF_VISIT_EHDR;
 	if (to_visit & ELF_VISIT_EHDR) visit_cb(ELF_VISIT_EHDR, ehdr, ehdr->e_ehsize, 0, (Elf64_Addr)-1, NULL, NULL, visit_arg);
 
 	/* 1. program headers */
-	Elf64_Phdr *phdrs = get_or_map(ehdr->e_phoff, ehdr->e_phnum * ehdr->e_phentsize, get_or_map_arg);
+	Elf64_Phdr *phdrs = (Elf64_Phdr*) get_or_map(ehdr->e_phoff, ehdr->e_phnum * ehdr->e_phentsize, get_or_map_arg);
 	// XX: bootstrapping problem: get_or_map is supposed to know what is mapped already.
 	// but the phdrs, for a loaded object, are already mapped, yet we don't know what addresses
 	// that consists of. so we can't know whether we need to map. Need another way to start things off?
@@ -638,10 +638,10 @@ visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg,
 	if (to_visit & ELF_VISIT_PHDRS) visit_cb(ELF_VISIT_PHDRS, phdrs, ehdr->e_phnum * ehdr->e_phentsize, ehdr->e_phoff, (Elf64_Addr)-1, NULL, ehdr, visit_arg);
 
 	/* 2. section headers */
-	Elf64_Shdr *shdrs = get_or_map(ehdr->e_shoff, ehdr->e_shnum * ehdr->e_shentsize, get_or_map_arg);
+	Elf64_Shdr *shdrs = (Elf64_Shdr*) get_or_map(ehdr->e_shoff, ehdr->e_shnum * ehdr->e_shentsize, get_or_map_arg);
 	if (!shdrs) return -ELF_VISIT_SHDRS;
 	// we pull out shstrtab data as the auxdata
-	char *shstrtab = ehdr->e_shstrndx ? get_or_map(shdrs[ehdr->e_shstrndx].sh_offset, shdrs[ehdr->e_shstrndx].sh_size, get_or_map_arg) : NULL;
+	char *shstrtab = (char*)(ehdr->e_shstrndx ? get_or_map(shdrs[ehdr->e_shstrndx].sh_offset, shdrs[ehdr->e_shstrndx].sh_size, get_or_map_arg) : NULL);
 	if (to_visit & ELF_VISIT_SHDRS) visit_cb(ELF_VISIT_SHDRS, shdrs, ehdr->e_shnum * ehdr->e_shentsize, ehdr->e_shoff, (Elf64_Addr)-1, &shdrs[ehdr->e_shstrndx], ehdr, visit_arg);
 
 	/* 3. dynamic section */
@@ -653,7 +653,7 @@ visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg,
 	Elf64_Shdr *dyn_shdr = find_shdr_of_type(SHT_DYNAMIC);
 	if (dyn_shdr && (to_visit & ELF_VISIT_DYNAMIC))
 	{
-		Elf64_Dyn *dyn = get_or_map(dyn_shdr->sh_offset, dyn_shdr->sh_size, get_or_map_arg);
+		Elf64_Dyn *dyn = (Elf64_Dyn*) get_or_map(dyn_shdr->sh_offset, dyn_shdr->sh_size, get_or_map_arg);
 		visit_cb(ELF_VISIT_DYNAMIC, dyn, dyn_shdr->sh_size, dyn_shdr->sh_offset, dyn_shdr->sh_addr, dyn_shdr, NULL, visit_arg);
 	}
 
@@ -661,8 +661,8 @@ visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg,
 	if (dynsym_shdr && (to_visit & ELF_VISIT_DYNSYM))
 	{
 		Elf64_Shdr* dynstr_shdr = &shdrs[dynsym_shdr->sh_link];
-		char *dynstr = get_or_map(dynstr_shdr->sh_offset, dynstr_shdr->sh_size, get_or_map_arg);
-		Elf64_Sym *dynsym = get_or_map(dynsym_shdr->sh_offset, dynsym_shdr->sh_size, get_or_map_arg);
+		char *dynstr = (char*) get_or_map(dynstr_shdr->sh_offset, dynstr_shdr->sh_size, get_or_map_arg);
+		Elf64_Sym *dynsym = (Elf64_Sym*) get_or_map(dynsym_shdr->sh_offset, dynsym_shdr->sh_size, get_or_map_arg);
 		visit_cb(ELF_VISIT_DYNSYM, dynsym, dynsym_shdr->sh_size, dynsym_shdr->sh_offset, dynsym_shdr->sh_addr, dynsym_shdr, dynstr, visit_arg);
 	}
 
@@ -670,8 +670,8 @@ visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg,
 	if (symtab_shdr && (to_visit & ELF_VISIT_SYMTAB))
 	{
 		Elf64_Shdr* strtab_shdr = &shdrs[symtab_shdr->sh_link];
-		char *strtab = get_or_map(strtab_shdr->sh_offset, strtab_shdr->sh_size, get_or_map_arg) ;
-		Elf64_Sym *symtab = get_or_map(symtab_shdr->sh_offset, symtab_shdr->sh_size, get_or_map_arg);
+		char *strtab = (char*) get_or_map(strtab_shdr->sh_offset, strtab_shdr->sh_size, get_or_map_arg) ;
+		Elf64_Sym *symtab = (Elf64_Sym*) get_or_map(symtab_shdr->sh_offset, symtab_shdr->sh_size, get_or_map_arg);
 		visit_cb(ELF_VISIT_SYMTAB, symtab, symtab_shdr->sh_size, symtab_shdr->sh_offset, symtab_shdr->sh_addr, symtab_shdr, strtab, visit_arg);
 	}
 
@@ -690,7 +690,7 @@ visit_elf_64(unsigned long to_visit, elf_visit_cb_64 *visit_cb, void *visit_arg,
 		if (build_id_shdr->sh_type == SHT_NOTE
 				 && ELF_VISIT_BUILD_ID)
 		{
-			unsigned char *build_id_data = get_or_map(build_id_shdr->sh_offset, build_id_shdr->sh_size, get_or_map_arg);
+			unsigned char *build_id_data = (unsigned char*) get_or_map(build_id_shdr->sh_offset, build_id_shdr->sh_size, get_or_map_arg);
 			visit_cb(ELF_VISIT_BUILD_ID, build_id_data, build_id_shdr->sh_size, build_id_shdr->sh_offset, build_id_shdr->sh_addr, build_id_shdr, NULL, visit_arg);
 		}
 	}
