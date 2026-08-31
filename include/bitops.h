@@ -21,25 +21,12 @@ extern "C" {
 #define INLINE_ATTRS __attribute__((always_inline,gnu_inline))
 #endif
 
-// FIXME: replace these with the fast versions!
 static inline int popcount64(uint64_t x) {
-	int c = 0;
-	int i;
-	for (i = 0; i < 64; i++) {
-		c += x & 1;
-		x >>= 1;
-	}
-	return c;
+	return __builtin_popcountll(x);
 }
 
 static inline int popcount32(uint32_t x) {
-	int c = 0;
-	int i;
-	for (i = 0; i < 32; i++) {
-		c += x & 1;
-		x >>= 1;
-	}
-	return c;
+	return __builtin_popcount(x);
 }
 
 static inline int is_power_of_two(size_t i)

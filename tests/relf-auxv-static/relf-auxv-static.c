@@ -14,7 +14,7 @@ int main(int argc, const char **argv)
 	fflush(stderr);
 	// sleep(10); /* DEBUG HACK */
 	
-	ElfW(auxv_t) *found = get_auxv((const char **) environ, &argc);
+	ElfW(auxv_t) *found = get_auxv(environ, &argc);
 	assert(found);
 	fprintf(stderr, "Think we found the auxv at %p; first words are (%p, %p)\n", 
 		found, ((void**) found)[0], ((void **) found)[1]);

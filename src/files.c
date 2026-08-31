@@ -66,28 +66,17 @@ static pthread_mutex_t mutex = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 #define BIG_LOCK
 #define BIG_UNLOCK
 #endif
-static int compare_lm_pair_by_load_addr(const void *v1, const void *v2)
-{
-	/* Trick: null pointers always compare *higher*. This is so that if we
-	 * null out an entry and re-sort, we compact to the beginning.
-	 * (But that doesn't mean that a load address of zero compares higher...
-	 * it doesn't.) */
-	const struct lm_pair *p1 = v1;
-	const struct lm_pair *p2 = v2;
-	if (p1 == p2) return 0;
-	if (!p1->lm) /* p2 compares higher */ return -1;
-	if (!p2->lm) /* p1 compares higher */ return 1;
-	uintptr_t addr1 = (uintptr_t) p1->lm->l_addr;
-	uintptr_t addr2 = (uintptr_t) p2->lm->l_addr;
-	/* avoid integer truncation issues by just returning -1 or 1 */
-	return (addr1 == addr2) ? 0 : (addr1 < addr2) ? -1 : 1;
-}
 void __insert_file_metadata(struct link_map *lm, struct file_metadata *fm) __attribute__((weak,visibility("protected")));
 void __insert_file_metadata(struct link_map *lm, struct file_metadata *fm)
 {
 	BIG_LOCK
-	lm_pairs[npairs++] = (struct lm_pair) { .lm = lm, .fm = fm };
-	qsort(lm_pairs, npairs, sizeof lm_pairs[0], compare_lm_pair_by_load_addr);
+	uintptr_t new_addr = (uintptr_t) lm->l_addr;
+	unsigned pos = npairs;
+	while (pos > 0 && (uintptr_t) lm_pairs[pos - 1].lm->l_addr > new_addr) --pos;
+	memmove(&lm_pairs[pos + 1], &lm_pairs[pos],
+		(npairs - pos) * sizeof lm_pairs[0]);
+	lm_pairs[pos] = (struct lm_pair) { .lm = lm, .fm = fm };
+	++npairs;
 	BIG_UNLOCK
 }
 void __delete_file_metadata(struct file_metadata **p) __attribute__((weak,visibility("protected")));
@@ -96,10 +85,12 @@ void __delete_file_metadata(struct file_metadata **p)
 	__runt_deinit_file_metadata(*p);
 	__private_free(*p);
 	BIG_LOCK
-	/* Clear both pointers in the pair */
-	bzero((char *)((uintptr_t) p - offsetof(struct lm_pair, fm)), sizeof (struct lm_pair));
-	qsort(lm_pairs, npairs, sizeof lm_pairs[0], compare_lm_pair_by_load_addr);
+	struct lm_pair *pair = (struct lm_pair *)((uintptr_t) p - offsetof(struct lm_pair, fm));
+	unsigned idx = pair - &lm_pairs[0];
+	memmove(&lm_pairs[idx], &lm_pairs[idx + 1],
+		(npairs - idx - 1) * sizeof lm_pairs[0]);
 	--npairs;
+	bzero(&lm_pairs[npairs], sizeof (struct lm_pair));
 	BIG_UNLOCK
 }
 struct file_metadata *__alloc_file_metadata(unsigned nsegs) __attribute__((weak,visibility("protected")));
@@ -154,7 +145,6 @@ struct file_metadata *__runt_files_metadata_by_addr(void *addr)
 	return metadata_for_addr(addr);
 }
 
-static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *info, size_t size, void *file_metadata);
 struct segments
 {
 	const ElfW(Phdr) *phdrs;
@@ -354,13 +344,19 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	}
 	/* We still haven't filled in everything... */
 	__insert_file_metadata(l, meta);
-	/* The only semi-portable way to get phdrs is to iterate over
-	 * *all* the phdrs. But we only want to process a single file's
-	 * phdrs now. Our callback must do the test. */
-	int dlpi_ret = dl_for_one_object_phdrs(l, add_all_loaded_segments_for_one_file_only_cb, meta);
-	assert(dlpi_ret != 0);
 	assert(meta->phdrs);
 	assert(meta->phnum && meta->phnum != -1);
+	/* Define the loadable segments. We already captured this file's phdr
+	 * array (meta->phdrs) via discover_segments_cb above, so iterate it
+	 * directly rather than triggering another full dl_iterate_phdr walk
+	 * over every loaded object. */
+	for (unsigned i = 0, nloadseen = 0; i < (unsigned) meta->phnum; ++i)
+	{
+		if (meta->phdrs[i].p_type == PT_LOAD)
+		{
+			__runt_segments_notify_define_segment(meta, i, nloadseen++);
+		}
+	}
 	/* Now fill in the PT_DYNAMIC stuff. */
 	/* Linux's vdso doesn't get its dynstr/dynsym pointers relocated
 	 * (i.e. the vdso's load address is not added to them), but other
@@ -506,26 +502,6 @@ static int discover_segments_cb(struct dl_phdr_info *info, size_t size, void *se
 	return 1; // can stop now
 }
 
-static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *info, size_t size, void *file_metadata)
-{
-	/* Produce the sorted symbols vector for this file. 
-	 * We do this here because dynsym is shared across the whole file. */
-	struct file_metadata *meta = (struct file_metadata *) file_metadata;
-	unsigned nload = 0;
-	for (unsigned i = 0; i < info->dlpi_phnum; ++i)
-	{
-		// if this phdr's a LOAD
-		if (info->dlpi_phdr[i].p_type == PT_LOAD)
-		{
-			__runt_segments_notify_define_segment(
-					meta,
-					i,
-					nload++
-				);
-		}
-	}
-	return 1;
-}
 /* FIXME: would be better if our dlclose hook gave us more than
  * just a filename. But what can it give us? We only know that
  * the ld.so really does the unload *after* it's happened, when
