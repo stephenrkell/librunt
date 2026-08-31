@@ -831,15 +831,16 @@ void *sym_to_addr_given_base(uintptr_t base, ElfW(Sym) *sym)
 }
 
 static inline
-void *fake_dlsym(void *handle, const char *symname)
+void *fake_dlsym_from(void *handle, const char *symname,
+	struct LINK_MAP_STRUCT_TAG *ref)
 {
 	/* Which object do we want? It's either
 	 * "the first" (RTLD_DEFAULT);
-	 * "the one after us (RTLD_NEXT);
+	 * "the one after the reference object" (RTLD_NEXT);
 	 * "this one". */
 
 	struct LINK_MAP_STRUCT_TAG *ourselves = NULL;
-	if (handle == RTLD_NEXT)
+	if (handle == RTLD_NEXT && !ref)
 	{
 		if (!(_DYNAMIC)) __assert_fail("_DYNAMIC found", __FILE__, __LINE__, __func__);
 
@@ -850,11 +851,10 @@ void *fake_dlsym(void *handle, const char *symname)
 	{
 		_Bool had_seen_ourselves = (ourselves != NULL);
 
-		if (l->l_ld == _DYNAMIC)
+		if (ref ? (l == ref) : (l->l_ld == _DYNAMIC))
 		{
 			ourselves = l;
 		}
-		
 		/* Is this object eligible? */
 		if (handle == l
 				|| handle == RTLD_DEFAULT
@@ -866,7 +866,6 @@ void *fake_dlsym(void *handle, const char *symname)
 			{
 				return sym_to_addr(found);
 			}
-			
 			if (handle == l)
 			{
 				/* Symbol not found. We can stop now. */
@@ -875,13 +874,17 @@ void *fake_dlsym(void *handle, const char *symname)
 			// else continue around the loop
 		}
 	}
-	
 not_found:
 	/* Symbol not found. FIXME: we really want to set dlerror, but we can't. 
 	 * Ideally we'd make a libdl call that sets it to something. But we can't
 	 * reliably do that from here. Instead, we use MAP_FAILED to signal error. */
 	return (void*) -1;
-	
+}
+
+static inline
+void *fake_dlsym(void *handle, const char *symname)
+{
+	return fake_dlsym_from(handle, symname, NULL);
 }
 
 static inline

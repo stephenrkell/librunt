@@ -252,11 +252,39 @@ void *dlsym(void *handle, const char *symbol)
 			orig_dlsym = NULL;
 		}
 		/* We're in trouble if fake dlsym can't find the real dlsym...
-		 * this is part of our bootstrapping strategy. What's goign on?
+		 * this is part of our bootstrapping strategy. What's going on?
 		 * Maybe we need a fake dlvsym to find these? */
 		if (!orig_dlsym) abort();
 	}
-	
+
+	/* RTLD_NEXT must NOT be forwarded to the underlying dlsym. 
+	 *
+	 * Because we interpose dlsym, the underlying dlsym would resolve "next" relative to
+	 * ITS caller -- which is now us, inside the LD_PRELOADed librunt/liballocs,
+	 * not the real client. 
+	 * 
+	 * With the preload first in link order, that hands an interposing client its OWN symbol back; e.g. a library that wraps
+	 * pthread_create and does dlsym(RTLD_NEXT, "pthread_create") then calls itself forever (Alaska...). 
+	 */
+	if (handle == RTLD_NEXT)
+	{
+		void *caller = __builtin_return_address(0);
+		struct link_map *caller_lm = get_highest_loaded_object_below(caller);
+		if (caller_lm)
+		{
+			/* Anchor the RTLD_NEXT search on the *caller's* object*/
+			void *ret = fake_dlsym_from(RTLD_NEXT, symbol, caller_lm);
+			if (ret == (void*) -1)
+			{
+				our_dlerror = "symbol not found (RTLD_NEXT)";
+				ret = NULL;
+			}
+			if (we_set_flag) __avoid_libdl_calls = 0;
+			return ret;
+		}
+		/* else: couldn't locate caller; fall through to the old behaviour */
+	}
+
 	void *ret = orig_dlsym(handle, symbol);
 	if (we_set_flag) __avoid_libdl_calls = 0;
 	return ret;
