@@ -472,9 +472,9 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 		// FIXME: the starts bitmaps need to be attached either to sections or
 		// to segments (if we don't have section headers). That's a bit nasty.
 		// It probably still works though.
-	out:
-		if (fd >= 0) close(fd);
 	}
+out:
+	if (fd >= 0) close(fd);
 	return meta;
 }
 void __runt_deinit_file_metadata(void *fm) __attribute__((visibility("protected")));
