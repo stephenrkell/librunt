@@ -202,14 +202,33 @@ void __runt_files_init(void)
 	}
 }
 
-static void *get_or_map_file_range(struct file_metadata *file,
+static void *map_extra_file_range(struct link_map *l, struct extra_mapping (*extra_mappings)[MAPPING_MAX],
+		size_t length, int fd, off_t offset); // sub-helper
+static void *get_or_map_file_range(struct link_map *l,
+	ElfW(Phdr) *phdrs, unsigned phnum,
+	struct extra_mapping (*extra_mappings)[MAPPING_MAX],
 	size_t length, int fd, off_t offset)
 {
-	/* Check whether we already have this range, either in a LOAD phdr or
-	 * in an extra mapping we made earlier. */
-	for (unsigned i = 0; i < file->phnum; ++i)
+	/* Check whether we already have this range, *either*
+	 * - in an existing memory mapping resulting from a LOAD phdr, or
+	 * - in an extra mapping we made earlier.
+	 * But don't assume that 'phdrs' is the PT_LOADed phdr -- it might be a
+	 * copy, and the caller might be using us to map the phdrs.
+	 * If it is, we don't want a duplicate mapping -- in the common case, the
+	 * dynamic linker has mapped the phdrs itself (cf. just read()ing them).
+	 *
+	 * GAH. This is confusing. It comes down to: don't make an extra_mapping of
+	 * the phdrs unless the dynamic linker didn't map them as part of any PT_LOAD.
+	 * How can we find that out?
+	 *
+	 * I think we need a bootstrapping stage where we get hold of the phdrs mapping,
+	 * or make it if the dynamic linker didn't. Then this function can *always* assume
+	 * that we have phdrs.
+	 */
+	assert(phdrs);
+	for (unsigned i = 0; i < phnum; ++i)
 	{
-		ElfW(Phdr) *phdr = &file->phdrs[i];
+		ElfW(Phdr) *phdr = &phdrs[i];
 		/* Conservatively we can only permit non-writable LOADs here,
 		 * because file and memory may have diverged. A common culprit
 		 * is copy relocs... copy-relocatable data might be placed in a
@@ -236,18 +255,23 @@ static void *get_or_map_file_range(struct file_metadata *file,
 					real_end >= offset + length)
 			{
 				// we can just return the address within that phdr
-				return (char*) file->l->l_addr + phdr->p_vaddr +
+				return (char*) l->l_addr + phdr->p_vaddr +
 					(offset - phdr->p_offset);
 			}
 		}
 	}
 	/* Without an fd (e.g. for the vdso) we can only return existing mappings. */
 	if (fd == -1) return NULL;
+	return map_extra_file_range(l, extra_mappings, length, fd, offset);
+}
+static void *map_extra_file_range(struct link_map *l, struct extra_mapping (*extra_mappings)[MAPPING_MAX],
+		size_t length, int fd, off_t offset)
+{
 	/* Now we can try making a fresh mapping. But maybe an existing one will do. */
 	unsigned midx = 0;
 	for (; midx < MAPPING_MAX; ++midx)
 	{
-		struct extra_mapping *m = &file->extra_mappings[midx];
+		struct extra_mapping *m = &(*extra_mappings)[midx];
 		if (!m->mapping_pagealigned)
 		{
 			// this is a free slot. we fill from index 0 upwards, so no more
@@ -270,7 +294,7 @@ static void *get_or_map_file_range(struct file_metadata *file,
 	void *ret = mmap(NULL, length, PROT_READ, MAP_PRIVATE, fd, rounded_offset);
 	if (!MMAP_RETURN_IS_ERROR(ret))
 	{
-		file->extra_mappings[midx] = (struct extra_mapping) {
+		(*extra_mappings)[midx] = (struct extra_mapping) {
 			.mapping_pagealigned = ret,
 			.fileoff_pagealigned = rounded_offset,
 			.size = length
@@ -300,11 +324,35 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 		(void*) l->l_addr);
 	/* To avoid reentrancy problems when initializing any meta-DSO we may load,
 	 * avoid hanging on to the static buffer pointer returned by
-	 * dynobj_name_from_dlpi_namethat... do the strdup here, but we will push
+	 * dynobj_name_from_dlpi_name... do the strdup here, and we will push
 	 * this pointer into the file_metadata struct later, whose deallocator will
 	 * free it. */
 	const char *dynobj_name = __private_strdup(tmp);
 	debug_printf(1, "librunt notified of load of object %s\n", dynobj_name);
+	/* FIXME: if we had the original fd that was exec'd or mmap'd, that would be great.
+	 * If we were in a libgerald-like ld.so extension context we could do this. *OR*,
+	 * in the exec case, very recent glibc ld.so will support AT_EXECFD: see
+	 * https://inbox.sourceware.org/libc-alpha/20260715-work-glibc-binfmt_misc-v1-0-b3b14336e664@kernel.org/
+	 *
+	 * We encapsulate __reopen_file so that clients with particular contextual
+	 * requirements can provide their own file opener. liballocs uses this
+	 * to do raw_open() not libc open(). libsystrap could do the same, but currently
+	 * doesn't. TODO: can we use this to avoid the race condition somehow, at least
+	 * in some clients?
+	 *
+	 * Another way to ensure we could reopen the file is if we could get a file
+	 * descriptor onto the file behind any memory mapping. Using /proc/self/map_files,
+	 * this is possible. So probably we should use this... if we fail, reopen it racily
+	 * but warn. Use a readdir/sscanf loop to match the dirent spanning l_ld (.dynamic). FIXME.
+	 */
+	int fd = __reopen_file(dynobj_name);
+	if (fd < 0)
+	{
+		// warn, at a debug level that depends on whether the path looks sane
+		debug_printf((dynobj_name && dynobj_name[0] == '/' ? 0 : 5),
+			"could not re-open `%s'\n", l->l_name);
+		fd = -1; /* We can still work with this, just not make new mappings. */
+	}
 	/* Look up the mapping sequence for this file. Note that
 	 * although a file is notionally sparse, modern glibc's ld.so
 	 * does ensure that it is spanned by a contiguous sequence of
@@ -317,12 +365,21 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	 * load address -- it starts at the first LOAD's base vaddr.
 	 * See the hack in liballocs's mmap.c.
 	 *
-	 * FIXME: instead of relying on dl_iterate_phdr, we may want to
-	 * provide it (polyfill-style). That means we need to hoist the
-	 * calls to get_or_map_file_range that grab the ELF header and
-	 * the program headers. Once we have those, we can provide
-	 * a phdr iteration... discover_segments_cb must use that instead.
-	 * CAREFUL of circularities: what does get_or_map_file_range assume?
+	 * TODO: instead of relying on dl_iterate_phdr, we may want to
+	 * provide our own dl_for_one_object_phdrs (polyfill-style).
+	 * That means we need to ensure we have the phdrs ourselves, one way
+	 * or another.
+	 *
+	 * Once we have those, we can provide a phdr iterator and have
+	 * discover_segments_cb use that instead.
+	 *
+	 * Note that to avoid circularities, get_or_map_file_range does not
+	 * receive our metadata any more. It receives only phdrs and the extra
+	 * mappings array. In future it could proceed using phdrs we have
+	 * temporarily snarfed ourselves, by file I/O if necessary, rather than
+	 * those exposed by dl_iterate_phdr. We will always try to find the existing
+	 * mapping, if it falls within a PT_LOAD; if it doesn't, we will use our
+	 * file-I/O'd copy, rather than the ld.so's file-I/O'd copy.
 	 */
 	struct segments sinfo = (struct segments) { .nload = 0 };
 	dl_for_one_object_phdrs(l, discover_segments_cb, &sinfo);
@@ -334,7 +391,7 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	struct file_metadata *meta = __alloc_file_metadata(sinfo.nload);
 	assert(meta);
 	meta->load_site = load_site;
-	meta->filename = dynobj_name;
+	meta->filename = dynobj_name; // here we take ownership of the name string strdup'd above
 	meta->l = l;
 	meta->phdrs = (ElfW(Phdr) *) sinfo.phdrs;
 	meta->phnum = sinfo.phnum;
@@ -372,20 +429,7 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	meta->dynstr_end = meta->dynstr + dynamic_lookup(meta->l->l_ld, DT_STRSZ)->d_un.d_val; /* always mapped by ld.so */
 	/* Now we have the most file metadata we can get without re-mapping extra
 	 * parts of the file. */
-	/* FIXME: we'd much rather not do open() on l->l_name (race condition) --
-	 * if we had the original fd that was exec'd, that would be great. If we
-	 * were in a libgerald-like ld.so extension context we could do this. *OR*
-	 * very recent glibc ld.so will support AT_EXECFD: see
-	 * https://inbox.sourceware.org/libc-alpha/20260715-work-glibc-binfmt_misc-v1-0-b3b14336e664@kernel.org/ */
-	int fd = __reopen_file(meta->filename);
-	if (fd < 0)
-	{
-		// warn, at a debug level that depends on whether the path looks sane
-		debug_printf((meta->filename && meta->filename[0] == '/' ? 0 : 5),
-			"could not re-open `%s'\n", l->l_name);
-		fd = -1; /* We can still work with this, just not make new mappings. */
-	}
-	meta->ehdr = get_or_map_file_range(meta, MIN_PAGE_SIZE, fd, 0);
+	meta->ehdr = get_or_map_file_range(l, meta->phdrs, meta->phnum, &meta->extra_mappings, MIN_PAGE_SIZE, fd, 0);
 	if (!meta->ehdr) goto out;
 	assert(0 == memcmp(meta->ehdr, "\177ELF", 4));
 	bzero(meta->build_id, sizeof meta->build_id);
@@ -393,7 +437,7 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	// assert sanity
 #define MAX_SANE_SHDRS_SIZE 512*sizeof(ElfW(Shdr))
 	assert(shdrs_sz < MAX_SANE_SHDRS_SIZE);
-	meta->shdrs = get_or_map_file_range(meta, shdrs_sz, fd, meta->ehdr->e_shoff);
+	meta->shdrs = get_or_map_file_range(l, meta->phdrs, meta->phnum, &meta->extra_mappings, shdrs_sz, fd, meta->ehdr->e_shoff);
 	if (meta->shdrs)
 	{
 #ifndef NDEBUG /* basic sanity checks for an ELF header */
@@ -407,7 +451,7 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 #endif
 		for (unsigned i = 0; i < meta->ehdr->e_shnum; ++i)
 		{
-#define GET_OR_MAP_SCN(__j) get_or_map_file_range(meta, meta->shdrs[(__j)].sh_size, fd, meta->shdrs[(__j)].sh_offset)
+#define GET_OR_MAP_SCN(__j) get_or_map_file_range(l, meta->phdrs, meta->phnum, &meta->extra_mappings, meta->shdrs[(__j)].sh_size, fd, meta->shdrs[(__j)].sh_offset)
 			if (meta->shdrs[i].sh_type == SHT_DYNSYM)
 			{
 				meta->dynsymndx = i;

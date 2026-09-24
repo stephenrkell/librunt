@@ -52,8 +52,7 @@ void *dlopen(const char *filename, int flag)
 		orig_dlopen = fake_dlsym(RTLD_NEXT, "dlopen");
 		if (!orig_dlopen) abort();
 	}
-	/* We ensure that all files loaded by the first dlopen
-	 * have been seen. */
+	/* We ensure that we've seen all files loaded prior to the first dlopen. */
 	__runt_files_init();
 	if (!early_lib_handles[0]) abort();
 
@@ -69,7 +68,9 @@ void *dlopen(const char *filename, int flag)
 	 * the link map. Use qsort and bsearch to avoid being quadratic. */
 	void *ret = NULL;
 	_Bool file_already_loaded = 0;
-	/* FIXME: inherently racy, but does any client really race here? */
+	/* FIXME: inherently racy, but does any client really race here?
+	 * Could we avoid the race by passing the real dlopen the /proc/self/fd/NNN symlink?
+	 * Maybe no, because it doesn't realpath() it... the dlpi_name can have symlinks. */
 	if (filename) 
 	{
 		const char *file_realname_raw = realpath_quick(filename);
@@ -79,7 +80,7 @@ void *dlopen(const char *filename, int flag)
 			if (strchr(filename, '/') == NULL)
 			{
 				// FIXME: We are supposed to handle default search paths
-				// cf. glibc eld/dl-load.c:_dl_map_object
+				// cf. glibc elf/dl-load.c:_dl_map_object
 				// HACK: For now just do a quick search on fixed known system library paths
 				// This is non portable!!
 				const char *library_sys_paths[] = { "/lib/", "/usr/lib/",
@@ -148,8 +149,8 @@ skip_load:
 
 int dlclose(void *handle)
 {
-	/* FIXME: libcrunch needs a way to purge its cache on dynamic unloading,
-	 * since it may contain "static" allocations. */
+	/* FIXME: liballocs needs a way to purge its cache on dynamic unloading,
+	 * since it may contain "static" allocations deemed cacheable. */
 
 	_Bool we_set_flag = 0;
 	if (!__avoid_libdl_calls) { we_set_flag = 1; __avoid_libdl_calls = 1; }
@@ -235,7 +236,7 @@ char *dlerror(void)
 	return ret;
 }
 
-/* Q. How on earth do we override dlsym?
+/* Q. How on earth do we wrap dlsym? We need to get the real dlsym using dlsym.
  * A. We use relf.h's fake_dlsym. */
 void *dlsym(void *handle, const char *symbol)
 {
