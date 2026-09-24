@@ -20,6 +20,20 @@ debug-%/librunt_preload.a:
 opt-%/librunt_preload.a:
 	mkdir -p $(dir build/$@) && cd $(dir build/$@) && $(MAKE_PREFIX) $(MAKE) -f ../../src/Makefile
 
+.PHONY: native
+native:
+	mkdir -p build/opt && cd build/opt && $(MAKE) -f ../../src/Makefile
+
+.PHONY: lib
+lib: native
+	$(MAKE) -C lib
+
+.PHONY: check test
+check test: lib
+	$(MAKE) -C test checkall
+
 .PHONY: clean
 clean:
 	rm -rf build
+	$(MAKE) -C lib clean
+	$(MAKE) -C test clean

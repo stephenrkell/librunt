@@ -7,3 +7,9 @@ lib/librunt_nonshared.a
 lib/librunt_preload.a
 lib/librunt_preload.so
 lib/outdir
+test/dlfcn/dlfcn
+test/find-r-debug/find-r-debug
+test/hello/hello
+test/query/query
+test/relf-auxv-dynamic/relf-auxv-dynamic
+test/relf-auxv-static/relf-auxv-static
