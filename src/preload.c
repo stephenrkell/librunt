@@ -6,7 +6,7 @@
 
 #define _GNU_SOURCE
 #include <dlfcn.h>
-#include <link.h>
+#include <link.h>     /* XXX: defines _DYNAMIC as a strong symbol, but we prefer weak... */
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
@@ -50,6 +50,7 @@ void *dlopen(const char *filename, int flag)
 	if (!orig_dlopen) // happens if we're called before liballocs init
 	{
 		orig_dlopen = fake_dlsym(RTLD_NEXT, "dlopen");
+		if (orig_dlopen == (void*)-1) abort();
 		if (!orig_dlopen) abort();
 	}
 	/* We ensure that we've seen all files loaded prior to the first dlopen. */
@@ -138,7 +139,20 @@ skip_load:
 		
 	/* Have we just opened a new object? If filename was null, 
 	 * we haven't; if ret is null; we haven't; if NOLOAD was passed,
-	 * we haven't. Otherwise we rely on the racy logic above. */
+	 * we haven't. Otherwise we rely on the racy logic above.
+	 *
+	 * PROBLEM: we now (in libsystrap) want the option of introspecting
+	 * on the object *before* dlopen returns, e.g. when running the initializer
+	 * of a just-mapped object. We can still do this, potentially, with a
+	 * more permissive __runt_files_notify_load()
+	 * OR
+	 * simply by getting rid of it? Just provide the query interface
+	 * and notify on demand? The problem is that we cannot snarf the
+	 * per-file/DSO "load_site" information. Maybe we should change
+	 * it to __runt_files_notify_loaded() but have this just set the
+	 * load site, and pull the core out into some other function.
+	 * Remember that we wrap __runt_files_notify_load in liballocs (static-file.c).
+	 */
 	if (filename != NULL && ret != NULL && !(flag & RTLD_NOLOAD) && !file_already_loaded)
 	{
 		__runt_files_notify_load(ret, __builtin_return_address(0));
@@ -214,6 +228,7 @@ static char *call_orig_dlerror(void)
 		// always use the fake dlsym, so we don't clobber the real dlerror
 		orig_dlerror = fake_dlsym(RTLD_NEXT, "dlerror");
 		if (!orig_dlerror) abort();
+		if (orig_dlerror == (void*)-1) abort();
 		our_dlerror = saved_msg;
 	}
 	return orig_dlerror();
@@ -262,7 +277,7 @@ void *dlsym(void *handle, const char *symbol)
 	if (we_set_flag) __avoid_libdl_calls = 0;
 	return ret;
 }
-void *__runt_dlsym(void *handle, const char *symbol) __attribute__((alias("dlsym")));
+void *__runt_dlsym(void *handle, const char *symbol) __attribute__((alias("dlsym"),leaf,nothrow,nonnull));
 
 void *__runt_fake_dlsym(void *handle, const char *symbol)
 {
@@ -358,21 +373,34 @@ int dl_iterate_phdr(
                                   size_t size, void *data),
                  void *data)
 {
-	// write_string("Blah8\n");
 	static int(*orig_dl_iterate_phdr)(int (*) (struct dl_phdr_info *info,
 		size_t size, void *data), void*);
 	if (!orig_dl_iterate_phdr)
 	{
-		// write_string("Blah11\n");
-		/* Needs to be fake, because if liballocs gets init'd in the middle of a malloc,
-		 * the real dlsym would try to reentrantly malloc. */
-		orig_dl_iterate_phdr = fake_dlsym(RTLD_NEXT, "dl_iterate_phdr");
+		/* Our lookup of dl_iterate_phdr needs to be fake, because if liballocs gets init'd
+		 * in the middle of a malloc, the real dlsym would try to reentrantly malloc. */
+		/* In the case of chain-loader clients like trace-syscalls-ld.so, whose code
+		 * may not be showing up in the link map yet, we cannot use RTLD_NEXT. We should
+		 * name a specific library. To locate its handle, we walk the link map. XXX: this
+		 * could be racy, but it is likely to run before any other thread is spawned. */
+		void *handle = NULL;
+		for (struct link_map *l = find_r_debug()->r_map; l; l = l->l_next)
+		{
+			char *found;
+			if (0 != (found = strstr(l->l_name, "/libc.so.6"))  // FIXME: sysdep
+					&& *(found + strlen("/libc.so.6")) == '\0')
+			{
+				handle = l;
+			}
+		}
+		if (!handle) abort();
+		orig_dl_iterate_phdr = fake_dlsym(handle, "dl_iterate_phdr");
 		if (orig_dl_iterate_phdr == (void*) -1)
 		{
 			our_dlerror = "symbol not found";
 			orig_dl_iterate_phdr = NULL;
 		}
-		assert(orig_dl_iterate_phdr);
+		if (!orig_dl_iterate_phdr) abort();
 	}
 
 	_Bool we_set_flag = 0;
