@@ -61,6 +61,8 @@ BARELY POSSIBLE without syscalls, libdl/allocation: or nonportable logic
 #define R_DEBUG_MAKE_ENUMERATOR(p) p
 #endif
 
+#include "bsearch.h" /* used in get_auxv_limits */
+
 /* To add saturatingwise, we add the smaller of
  * (the-other-arg, dist-to-the-max). We can use vas.h's
  * MINPTR/MAXPTR here because they are defined on uintptr_t. */
