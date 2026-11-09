@@ -28,7 +28,7 @@ struct file_metadata *(__attribute__((warning("do not call __runt_files_metadata
 #include "relf.h"
 #include "dso-meta.h"
 #include "vas.h"
-
+#include "librunt.h"
 #include "librunt_private.h"
 int fstat(int fd, struct stat *buf);
 
@@ -135,7 +135,7 @@ struct lm_pair *lookup_by_addr(void *addr)
 }
 struct link_map *__runt_files_lookup_by_addr(void *addr)
 {
-	if (!initialized) __runt_files_init();
+	if (!__librunt_is_initialized) __librunt_global_init();
 	struct lm_pair *p = lookup_by_addr(addr);
 	return p ? p->lm : NULL;
 }
@@ -150,7 +150,7 @@ static struct file_metadata *metadata_for_addr(void *addr)
 struct file_metadata *__wrap___runt_files_metadata_by_addr(void *addr);
 struct file_metadata *__runt_files_metadata_by_addr(void *addr)
 {
-	if (!initialized) __runt_files_init();
+	if (!__librunt_is_initialized) __librunt_global_init();
 	return metadata_for_addr(addr);
 }
 
@@ -202,7 +202,66 @@ void __runt_files_init(void)
 	}
 }
 
-static void *map_extra_file_range(struct link_map *l, struct extra_mapping (*extra_mappings)[MAPPING_MAX],
+static ElfW(Phdr) *find_mapped_phdrs(struct link_map *l, int fd, ElfW(Ehdr) *out_ehdr, struct segments *out_sinfo)
+{
+	/* 0. With just the link map l, we know that
+	 *    -- the mapping at l->l_ld is the PT_LOAD overlapping the PT_DYNAMIC
+	 *    -- something *may* be mapped at l->l_addr, and if so, we can assume it
+	 *         is one of the PT_LOADs. */
+	ElfW(Ehdr) ehdr;
+	ssize_t nread = pread(fd, &ehdr, sizeof ehdr, 0); // XXX: don't assume file begins at offset 0?
+		// this can easily be rewritten to do sequential I/O, seeking forward for each phdr
+		// (but remember to rewind it to its original position)
+	if (nread != sizeof ehdr) abort();
+	if (out_ehdr) *out_ehdr = ehdr;
+	ElfW(Phdr) phdrs[ehdr.e_phnum];
+	if (out_sinfo) out_sinfo->phnum = ehdr.e_phnum;
+	unsigned nload = 0;
+	for (unsigned i = 0; i < ehdr.e_phnum; ++i)
+	{
+		nread = pread(fd, &phdrs[i], sizeof phdrs[0], ehdr.e_phoff + i * ehdr.e_phentsize);
+		if (nread != sizeof phdrs[0]) abort();
+		if (phdrs[i].p_type == PT_LOAD) ++nload;
+	}
+	if (out_sinfo) out_sinfo->nload = nload;
+	/* Now we've taken a copy of the program headers. That might allow us to infer
+	 * that they're already mapped. */
+#if 0 /* PT_PHDR is actually irrelevant, but if it weren't, we might do this. */
+	ElfW(Phdr) *pt_phdr = NULL;
+	for (unsigned i = 0; i < ehdr.e_phnum; ++i)
+	{
+		if (phdrs[i].p_type == PT_PHDR) { pt_phdr = &phdrs[i]; break; }
+	}
+#endif
+	/* Does any PT_LOAD cover the phdrs themselves? NOTE that this doens't depend
+	 * on whether there's a PT_PHDR. */
+	ElfW(Addr) phdrs_mapped_vaddr = (ElfW(Addr))-1;
+	for (unsigned i = 0; i < ehdr.e_phnum; ++i)
+	{
+		if (    phdrs[i].p_type == PT_LOAD
+		     && phdrs[i].p_offset <= ehdr.e_phoff
+		     && (0 != (phdrs[i].p_flags & PF_R))
+		     && phdrs[i].p_offset + phdrs[i].p_filesz >=
+		            ehdr.e_phoff + ehdr.e_phentsize * ehdr.e_phnum)
+		{
+			/* This means we've found a phdr that overlaps e_phoff in offset-space
+			 * and covers the entirety of the phdrs, and is readable.
+			 * In theory there could be more than one of these. Take the first. */
+			phdrs_mapped_vaddr = phdrs[i].p_vaddr + (ehdr.e_phoff - phdrs[i].p_offset);
+		}
+	}
+	ElfW(Phdr) *found;
+	if (phdrs_mapped_vaddr != (ElfW(Addr))-1) found = (void*)(l->l_addr + phdrs_mapped_vaddr);
+	else found = NULL;
+	if (out_sinfo) out_sinfo->phdrs = found;
+	return found;
+	// if found is null, the caller will have to map them separately
+	// XXX: we've already taken a copy, so isn't this a wasted effort? Just use our copy?
+	// Maybe, but it's more uniform to have them be one of our extra_mappings, so that e.g. we
+	// munmap them rather than freeing the memory holding the copy.
+}
+
+static void *get_or_map_extra_file_range_fd_no_phdrs(struct link_map *l, struct extra_mapping (*extra_mappings)[MAPPING_MAX],
 		size_t length, int fd, off_t offset); // sub-helper
 static void *get_or_map_file_range(struct link_map *l,
 	ElfW(Phdr) *phdrs, unsigned phnum,
@@ -212,21 +271,23 @@ static void *get_or_map_file_range(struct link_map *l,
 	/* Check whether we already have this range, *either*
 	 * - in an existing memory mapping resulting from a LOAD phdr, or
 	 * - in an extra mapping we made earlier.
-	 * But don't assume that 'phdrs' is the PT_LOADed phdr -- it might be a
-	 * copy, and the caller might be using us to map the phdrs.
-	 * If it is, we don't want a duplicate mapping -- in the common case, the
-	 * dynamic linker has mapped the phdrs itself (cf. just read()ing them).
 	 *
-	 * GAH. This is confusing. It comes down to: don't make an extra_mapping of
+	 * Subtlety: don't assume the 'phdrs' we're passed are the PT_LOADed phdr -- they
+	 * might be a copy, and the caller might be using us to map the true phdr data.
+	 * But if we *are* passed the true phdr data (a mapping thereof), we don't want a
+	 * duplicate mapping -- and this is the common case, the dynamic linker has mapped
+	 * the phdrs itself (cf. just read()ing them).
+	 *
+	 * This is confusing. It comes down to: don't make an extra_mapping of
 	 * the phdrs unless the dynamic linker didn't map them as part of any PT_LOAD.
-	 * How can we find that out?
 	 *
-	 * I think we need a bootstrapping stage where we get hold of the phdrs mapping,
-	 * or make it if the dynamic linker didn't. Then this function can *always* assume
-	 * that we have phdrs.
+	 * Previously this function is wrong when asked for a non-phdr data, but when
+	 * phdrs are not located yet. We need a bootstrapping stage where we get hold of the
+	 * phdrs mapping, or make it if the dynamic linker didn't. Reading the phdrs by file
+	 * I/O is a step that enables us to *find* the already-existing mapping if there is
+	 * one. That's get_or_map_extra_file_range_fd_no_phdrs. We have this right now, I think.
 	 */
-	assert(phdrs);
-	for (unsigned i = 0; i < phnum; ++i)
+	if (phdrs) for (unsigned i = 0; i < phnum; ++i)
 	{
 		ElfW(Phdr) *phdr = &phdrs[i];
 		/* Conservatively we can only permit non-writable LOADs here,
@@ -254,7 +315,9 @@ static void *get_or_map_file_range(struct link_map *l,
 			if (phdr->p_offset <= (ElfW(Off)) offset &&
 					real_end >= offset + length)
 			{
-				// we can just return the address within that phdr
+				// we can just return the address within that already-mapped phdr
+				// (and it doesn't matter whether the phdrs we used to locate it are
+				// a "true" phdr mapping or a file I/O copy)
 				return (char*) l->l_addr + phdr->p_vaddr +
 					(offset - phdr->p_offset);
 			}
@@ -262,9 +325,9 @@ static void *get_or_map_file_range(struct link_map *l,
 	}
 	/* Without an fd (e.g. for the vdso) we can only return existing mappings. */
 	if (fd == -1) return NULL;
-	return map_extra_file_range(l, extra_mappings, length, fd, offset);
+	return get_or_map_extra_file_range_fd_no_phdrs(l, extra_mappings, length, fd, offset);
 }
-static void *map_extra_file_range(struct link_map *l, struct extra_mapping (*extra_mappings)[MAPPING_MAX],
+static void *get_or_map_extra_file_range_fd_no_phdrs(struct link_map *l, struct extra_mapping (*extra_mappings)[MAPPING_MAX],
 		size_t length, int fd, off_t offset)
 {
 	/* Now we can try making a fresh mapping. But maybe an existing one will do. */
@@ -304,6 +367,8 @@ static void *map_extra_file_range(struct link_map *l, struct extra_mapping (*ext
 	return NULL;
 }
 
+struct file_metadata *__runt_files_create_metadata(struct link_map *handle, const void *load_site_if_known);
+
 /* IMPORTANT: don't call this directly. We want to be able to wrap it.
  * But we call it from this file; that won't be wrapped unless we
  * ensure it's called on an undefined symbol. So when building a DSO
@@ -320,6 +385,30 @@ struct file_metadata *__wrap__runt_files_notify_load(void *handle, const void *l
 struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site)
 {
 	struct link_map *l = (struct link_map *) handle;
+	/* Do we already know about this obj?
+	 * If so, we might simply be lacking its load_site. */
+	struct file_metadata *existing = __wrap___runt_files_metadata_by_addr(l->l_ld);
+	if (existing)
+	{
+		if (load_site && !existing->load_site) existing->load_site = load_site;
+		return existing;
+	}
+	return __runt_files_create_metadata(l, load_site);
+}
+/* What's the difference between this and notify_load? Only the
+ * better name and the fact that notify_load is explicitly supplying
+ * the load site, which we do not expect our caller to know. */
+struct file_metadata *__runt_files_get_or_create_metadata(struct link_map *l)
+{
+	/* Do we already know about this obj? */
+	struct file_metadata *existing = __wrap___runt_files_metadata_by_addr(l->l_ld);
+	if (existing) return existing;
+	/* FIXME: this could be racy. */
+	return __runt_files_create_metadata(l, /* load_site */ NULL);
+}
+
+struct file_metadata *__runt_files_create_metadata(struct link_map *l, const void *load_site_if_known)
+{
 	const char *tmp = dynobj_name_from_dlpi_name(l->l_name,
 		(void*) l->l_addr);
 	/* To avoid reentrancy problems when initializing any meta-DSO we may load,
@@ -346,13 +435,77 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	 * but warn. Use a readdir/sscanf loop to match the dirent spanning l_ld (.dynamic). FIXME.
 	 */
 	int fd = __reopen_file(dynobj_name);
-	if (fd < 0)
+	ElfW(Phdr) *phdrs = NULL;
+	ElfW(Ehdr) ehdr; // will be filled only by find_mapped_phdrs
+	bzero(&ehdr, sizeof ehdr);
+	struct segments sinfo = (struct segments) { .nload = 0 };
+	if (fd >= 0)
+	{
+		phdrs = find_mapped_phdrs(l, fd, &ehdr, &sinfo);
+	}
+	else
 	{
 		// warn, at a debug level that depends on whether the path looks sane
 		debug_printf((dynobj_name && dynobj_name[0] == '/' ? 0 : 5),
 			"could not re-open `%s'\n", l->l_name);
-		fd = -1; /* We can still work with this, just not make new mappings. */
+		fd = -1;
+		/* We can still work with this, but
+		 * - we can't make new mappings
+		 * - we can't get hold of phdrs by ourselves -- only dl_iterate_phdr. */
 	}
+	if (!sinfo.nload) // this is true only if we have no fd (or the file is bad somehow)
+	{
+		// XXX: is this safe? we are doing it only if we have no fd, but maybe need to be tighter?
+		// If librunt is not yet initialized, it may not be safe
+		if (__librunt_is_initialized)
+		{
+			/* We can't read the phdrs by file I/O (no fd), and we
+			 * can't read from from the ld.so because the only public API
+			 * will crash. What to do? TODO: let's figure out *why* we don't get
+			 * the original dl_iterate_phdr. It's in libc!
+			 * It seems that RTLD_NEXT is the culprit: first it wants to find
+			 * ourselves, but if we're in the trace-syscalls-ld.so (or whatever),
+			 * we don't exist yet. OK, worked around in preload.c: look for libc.so.6's handle. */
+			dl_for_one_object_phdrs(l, discover_segments_cb, &sinfo);
+			assert(sinfo.nload != 0);
+			// XXX: if we do call it, can we save the ElfW(Phdr)* pointer it gives us?
+			// Yes, I think saving it is fair game. It will only become invalid if
+			// the object is unloaded.
+			phdrs = (ElfW(Phdr)*) sinfo.phdrs;
+		} // otherwise warn
+		else debug_printf(0, "no fd for file `%s' and too early to get phdrs via libc\n", l->l_name);
+		// TODO: there's one further trick we could use, just in memory.
+		// If l_addr is mapped (as it is with the vdso) and begins \x7fELF,
+		// try to read the ELF contents directly from memory. We accept this as
+		// correct, rather than just coincidental data, only if we reach the PT_DYNAMIC
+		// at an address that agrees with l_ld. TODO: how to test whether it's mapped?
+		// One approximation is whether it's within the same page as l_ld.
+	} // else we will fill in the phdrs below
+	// now we can allocate the metadata structure
+	/* PROBLEM: clients like liballocs want to extend this structure.
+	 * So we should let them.
+	 * We've already abstracted the insert and delete functions.
+	 * How to abstract allocation? */
+	struct file_metadata *meta = __alloc_file_metadata(sinfo.nload);
+	assert(meta);
+	meta->l = l;
+	meta->phnum = sinfo.phnum;
+	meta->load_site = load_site_if_known; /* may be null at this stage */
+	meta->filename = dynobj_name; // here we take ownership of the name string strdup'd above
+	meta->nload = sinfo.nload;
+	meta->vaddr_begin = (uintptr_t)-1;
+	meta->vaddr_end = 0;
+	if (!phdrs && ehdr.e_phoff && fd != -1)
+	{
+		// spend an extra mapping to map the program headers
+		// XXX: could just rely on dl_iterate_phdr as called above, but we know we want to avoid that
+		phdrs = get_or_map_extra_file_range_fd_no_phdrs(l, &meta->extra_mappings,
+			 ehdr.e_phnum * ehdr.e_phentsize, fd, ehdr.e_phoff);
+	}
+	meta->phdrs = phdrs;
+	//assert(meta->phdrs);
+	// we might not have phdrs!
+
 	/* Look up the mapping sequence for this file. Note that
 	 * although a file is notionally sparse, modern glibc's ld.so
 	 * does ensure that it is spanned by a contiguous sequence of
@@ -381,43 +534,31 @@ struct file_metadata *__runt_files_notify_load(void *handle, const void *load_si
 	 * mapping, if it falls within a PT_LOAD; if it doesn't, we will use our
 	 * file-I/O'd copy, rather than the ld.so's file-I/O'd copy.
 	 */
-	struct segments sinfo = (struct segments) { .nload = 0 };
-	dl_for_one_object_phdrs(l, discover_segments_cb, &sinfo);
-	assert(sinfo.nload != 0);
-	/* PROBLEM: clients like liballocs want to extend this structure.
-	 * So we should let them.
-	 * We've already abstracted the insert and delete functions.
-	 * How to abstract allocation? */
-	struct file_metadata *meta = __alloc_file_metadata(sinfo.nload);
-	assert(meta);
-	meta->load_site = load_site;
-	meta->filename = dynobj_name; // here we take ownership of the name string strdup'd above
-	meta->l = l;
-	meta->phdrs = (ElfW(Phdr) *) sinfo.phdrs;
-	meta->phnum = sinfo.phnum;
-	meta->nload = sinfo.nload;
-	meta->vaddr_begin = (uintptr_t)-1;
-	meta->vaddr_end = 0;
-	for (int i = 0; i < meta->phnum; ++i)
+	if (phdrs) for (int i = 0; i < meta->phnum; ++i)
 	{
-		if (sinfo.phdrs[i].p_type == PT_LOAD)
+		if (phdrs[i].p_type == PT_LOAD)
 		{
 			/* We can round down to int because vaddrs *within* an object 
 			 * will not be more than 2^31 from the object base. */
-			if (sinfo.phdrs[i].p_vaddr < meta->vaddr_begin) meta->vaddr_begin = sinfo.phdrs[i].p_vaddr;
-			uintptr_t max_plus_one = sinfo.phdrs[i].p_vaddr + sinfo.phdrs[i].p_memsz;
+			if (phdrs[i].p_vaddr < meta->vaddr_begin) meta->vaddr_begin = phdrs[i].p_vaddr;
+			uintptr_t max_plus_one = phdrs[i].p_vaddr + phdrs[i].p_memsz;
 			if (max_plus_one > meta->vaddr_end) meta->vaddr_end = max_plus_one;
 		}
 	}
+	else meta->vaddr_end = -1;
 	/* We still haven't filled in everything... */
 	__insert_file_metadata(l, meta);
 	/* The only semi-portable way to get phdrs is to iterate over
 	 * *all* the phdrs. But we only want to process a single file's
-	 * phdrs now. Our callback must do the test. */
-	int dlpi_ret = dl_for_one_object_phdrs(l, add_all_loaded_segments_for_one_file_only_cb, meta);
+	 * phdrs now. Our callback must do the test. We used to call the
+	 * callback through dl_for_one_object_phdrs, but we've already got
+	 * the phdrs if they can be got, so the "callback" now uses the metadata
+	 * directly, which we pass as its void* arg. */
+	int dlpi_ret = add_all_loaded_segments_for_one_file_only_cb(NULL, 0, meta);
 	assert(dlpi_ret != 0);
-	assert(meta->phdrs);
-	assert(meta->phnum && meta->phnum != -1);
+	//assert(meta->phdrs);
+	/* ^^ commented out because we may not get phdrs in some awkward cases e.g. if file is the vdso. */
+	assert(!meta->phnum || meta->phnum != -1);
 	/* Now fill in the PT_DYNAMIC stuff. */
 	/* Linux's vdso doesn't get its dynstr/dynsym pointers relocated
 	 * (i.e. the vdso's load address is not added to them), but other
@@ -550,16 +691,16 @@ static int discover_segments_cb(struct dl_phdr_info *info, size_t size, void *se
 	return 1; // can stop now
 }
 
-static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *info, size_t size, void *file_metadata)
+static int add_all_loaded_segments_for_one_file_only_cb(struct dl_phdr_info *info_ignored, size_t size_ignored, void *file_metadata)
 {
 	/* Produce the sorted symbols vector for this file. 
 	 * We do this here because dynsym is shared across the whole file. */
 	struct file_metadata *meta = (struct file_metadata *) file_metadata;
 	unsigned nload = 0;
-	for (unsigned i = 0; i < info->dlpi_phnum; ++i)
+	for (unsigned i = 0; i < meta->phnum; ++i)
 	{
 		// if this phdr's a LOAD
-		if (info->dlpi_phdr[i].p_type == PT_LOAD)
+		if (meta->phdrs[i].p_type == PT_LOAD)
 		{
 			__runt_segments_notify_define_segment(
 					meta,

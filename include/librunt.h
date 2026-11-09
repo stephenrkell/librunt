@@ -44,6 +44,10 @@ const char *__runt_get_exe_realpath(void) PROTECTED;
 struct link_map *__runt_files_lookup_by_addr(void *addr) PROTECTED;
 struct file_metadata;
 struct file_metadata *__runt_files_metadata_by_addr(void *addr) PROTECTED;
+struct file_metadata *__runt_files_get_or_create_metadata(struct link_map *l) PROTECTED;
+struct file_metadata *__runt_files_create_metadata(struct link_map *l, const void *load_site_if_known) PROTECTED;
+struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site) PROTECTED;
+void __runt_files_notify_unload(const char *copied_filename) PROTECTED;
 
 extern rlim_t __stack_lim_cur PROTECTED;
 
