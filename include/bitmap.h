@@ -8,6 +8,7 @@
 // want a truly word-sized integer... let's use uintptr_t for now
 #include <stdint.h>
 #include "bitops.h"
+#include "vas.h"
 #include "elfw.h"
 
 #ifndef WORD_BITSIZE

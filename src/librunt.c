@@ -17,7 +17,7 @@
 FILE *stream_err __attribute__((visibility("hidden")));
 
 int __librunt_debug_level;
-_Bool __librunt_is_initialized;
+_Bool __librunt_is_initialized __attribute__((visibility("hidden")));
 
 // these two are defined in addrmap.h as weak
 unsigned long __addrmap_max_stack_size;

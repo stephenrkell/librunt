@@ -30,6 +30,9 @@ typedef struct {
 #define PROTECTED
 #endif
 
+extern _Bool __librunt_is_initialized;
+int __librunt_global_init(void);
+
 extern const char __ldso_name[] PROTECTED;
 /* We define a dladdr that caches stuff. */
 Dl_info dladdr_with_cache(const void *addr) PROTECTED;
@@ -70,10 +73,10 @@ extern const char *__auxv_asciiz_start PROTECTED;
 extern const char *__auxv_asciiz_end PROTECTED;
 extern const char **__env_vector_start PROTECTED;
 extern const char **__env_vector_terminator PROTECTED;
-extern const char **__argv_vector_start PROTECTED;
-extern const char **__argv_vector_terminator PROTECTED;
-extern ElfW(auxv_t) *__auxv_array_start PROTECTED;
-extern ElfW(auxv_t) *__auxv_array_terminator PROTECTED;
+extern const char **__arg_vector_start PROTECTED;
+extern const char **__arg_vector_terminator PROTECTED;
+extern ElfW(auxv_t) *__aux_vector_start PROTECTED;
+extern ElfW(auxv_t) *__aux_vector_terminator PROTECTED;
 extern intptr_t *__auxv_program_argcountp PROTECTED;
 extern void *__program_entry_point PROTECTED;
 extern void *__top_of_initial_stack PROTECTED;
@@ -82,6 +85,20 @@ extern void *__top_of_initial_stack PROTECTED;
  * which is useful for debugging. relf.h conditionally uses this. To do so, check
  * that librunt.h is included before relf.h. */
 #ifdef IN_LIBRUNT_DSO
+/* What's the distinction between 'command' and 'dynobj'?
+ *
+ * It has to do with hash-bang executables... the dynobj name will be
+ * "/bin/bash" or whatever, while the "command" name will be "mycommand.sh"
+ * or whatever. Clients that really want an ELF file need to use dynobj.
+ *
+ * However, there is still a thematically similar problem, to do with
+ * interpreters of a dynobj. If we are doing /path/to/ld.so /bin/bash blah.sh,
+ * then what will we get? For us, the "exe" is whatever unique executable
+ * the dynamic linker has loaded. So, it should never be the dynamic linker
+ * itself. It's possible we're running in a context where the dynamic linker
+ * hasn't started up (e.g. we are linked in to a chain loader) and so we may
+ * fail to get an answer.
+ * */
 char *get_exe_dynobj_fullname(void) __attribute__((visibility("hidden")));
 char *get_exe_dynobj_basename(void) __attribute__((visibility("hidden")));
 char *get_exe_command_basename(void) __attribute__((visibility("hidden")));

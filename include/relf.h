@@ -30,7 +30,18 @@ int strncmp(const char *s1, const char *s2, size_t n);
 int strcmp(const char *s1, const char *s2);
 
 extern char **environ;
+/* avoid stdlib.h */
 extern void abort(void) __attribute__((noreturn));
+void qsort(void *base, size_t nmemb, size_t size, int (*compar)(const void *, const void *));
+
+
+/* some stdio.h-avoidance */
+struct _IO_FILE;
+int fprintf(struct _IO_FILE * restrict,  const char * restrict, ...);
+int fflush(struct _IO_FILE *);
+#ifndef stderr  /* guard against musl's #definition of stderr */
+extern struct _IO_FILE *const stderr;
+#endif
 
 /* 
 
@@ -319,81 +330,633 @@ ElfW(auxv_t) *auxv_xlookup(ElfW(auxv_t) *a, ElfW(Addr) tag)
 	return found;
 }
 
+// this mirrors the order of content in the auxv
+enum auxv_component { AUXV_ARGCOUNT, AUXV_ARG_VECTOR, AUXV_ENV_VECTOR, AUXV_AUX_VECTOR, AUXV_ASCIIZ };
+
 struct auxv_limits
 {
-	ElfW(auxv_t) *auxv_array_terminator;
+	ElfW(auxv_t) *aux_vector_start;
+	ElfW(auxv_t) *aux_vector_terminator;
 	const char **env_vector_start;
 	const char **env_vector_terminator;
-	const char **argv_vector_start;
-	const char **argv_vector_terminator;
+	const char **arg_vector_start;
+	const char **arg_vector_terminator;
 	const char *asciiz_start;
 	const char *asciiz_end;
 	intptr_t *p_argcount;
 };
 
+/* used with qsort in get_auxv_limits */
+static inline int compare_unsigned_long(const void *p1_as_void, const void *p2_as_void)
+{
+	unsigned long *p1 = (unsigned long *) p1_as_void;
+	unsigned long *p2 = (unsigned long *) p2_as_void;
+	return (*p1 < *p2) ? -1 : (*p1 == *p2) ? 0 : 1;
+}
+#define auxv_ptr_tags(v) \
+ v(AT_PHDR) \
+ v(AT_BASE) \
+ v(AT_ENTRY) \
+ v(AT_PLATFORM) \
+ v(AT_BASE_PLATFORM) \
+ v(AT_RANDOM) \
+ v(AT_EXECFN) \
+ v(AT_SYSINFO)
+#define auxv_string_tags(v) \
+ v(AT_PLATFORM) \
+ v(AT_BASE_PLATFORM) \
+ v(AT_EXECFN) \
+ v(AT_RANDOM) /* not ASCII data, but Linux puts it among the asciiz */
+
 static inline
-struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
+struct auxv_limits get_auxv_limits(ElfW(auxv_t) *aux_vector_start)
 {
 #ifdef __cplusplus
-	struct auxv_limits lims = { 0, 0, 0, 0, 0, 0, 0, 0 };
+	struct auxv_limits lims = { 0, 0, 0, 0, 0, 0, 0, 0, 0 };
 #else
-	struct auxv_limits lims = { .auxv_array_terminator = NULL };
+	struct auxv_limits lims = { .aux_vector_terminator = NULL };
 #endif
-	const char *highest_asciiz_seen = (const char*) auxv_array_start; // dummy initial value
+	const char *lowest_asciiz_seen = (const char*) -1; // dummy initial value
+	/* As we visit string pointers that might point into the asciiz area,
+	 * we keep track of the range of addresses seen, to get the bounds of
+	 * the asciiz block. PROBLEM: if anyone has done surgery
+	 * on these vectors since startup, there could be pointers pointing elsewhere,
+	 * which will confuse us.
+	 *
+	 * Can we detect these? The "real" asciiz area is definitely above the auxv itself.
+	 * For now we are asking the caller for an upper bound, but how will it know what
+	 * to say? A better idea would be to track the contiguous run of pages, starting
+	 * with PAGENUM(p_auxv). If we see a discontinuity in page numbers, we assume that
+	 * the strings beyond the discontinuity are "non-local" i.e. don't belong to this
+	 * asciiz block.
+	 *
+	 * If we were liballocs, we could do better because we could probe an arbitrary
+	 * page for emptiness-or-otherwise. I think this will do for now though.
+	 *
+	 * We need to collect a set of pagenums as we go. A subtlety: we don't want only to
+	 * heed the start address of each string pointer, but also the pages it passes over
+	 * i.e. in [str, str + strlen(str) + 1[. That means the upper bound for the size of
+	 * this set is the length of referenced string data (in pages, rounded up).
+	 *
+	 * To avoid a malloc/realloc loop, we count an upper bound of the number of distinct
+	 * pages, in one pass -- a string of NBYTES touches at most 1 + ROUND_UP(NBYTES/PAGE_SIZE) pages.
+	 * Then alloca some space for the set, which we build in another pass. Finally we look
+	 * for the longest contiguous run starting from EITHER PAGENUM(end-of-vectors) OR
+	 * PAGENUM(end-of-vectors-rounded up by 16 bytes)  -- corner cases ahoy.
+	 */
+	unsigned max_distinct_pages = 0;
+	lims.aux_vector_start = aux_vector_start;
+	lims.aux_vector_terminator = aux_vector_start;
+	while (lims.aux_vector_terminator->a_type != AT_NULL) ++lims.aux_vector_terminator;
 
-	lims.auxv_array_terminator = auxv_array_start;
-	while (lims.auxv_array_terminator->a_type != AT_NULL)
-	{
-		/* FIXME: check for AT_RANDOM, AT_PLATFORM and anything else that might
-		 * be pointing at data in the vague asciiz area, so we can remember the
-		 * highest address. */
-		++lims.auxv_array_terminator;
-	}
-
-	/* auxv_array_start[0] is the first word higher than envp's null terminator. */
-	lims.env_vector_terminator = ((const char**) auxv_array_start) - 1;
+	/* aux_vector_start[0] is the first word higher than envp's null terminator. */
+	lims.env_vector_terminator = ((const char**) aux_vector_start) - 1;
 	/* In some strange cases we get multiple words of zero terminator. */
 	while (!*((char**) lims.env_vector_terminator - 1)) --lims.env_vector_terminator;
+	/* Now the terminator is as low as it can go. If it's not null, it means we
+	 * didn't go around the loop above even once, meaning aux_vector_start - 1 was
+	 * non-null to begin with. */
 	if (!(!*lims.env_vector_terminator)) __assert_fail("found envp terminator", __FILE__, __LINE__, __func__);
 	lims.env_vector_start = lims.env_vector_terminator;
 	while (*((char**) lims.env_vector_start - 1)) --lims.env_vector_start;
 
-	/* argv_vector_terminator is the next word lower than envp's first entry. */
-	lims.argv_vector_terminator = ((const char**) lims.env_vector_start) - 1;
-	if (!(!*lims.argv_vector_terminator)) __assert_fail("found argv terminator", __FILE__, __LINE__, __func__);
-	lims.argv_vector_start = lims.argv_vector_terminator;
+	/* arg_vector_terminator is the next word lower than envp's first entry. */
+	lims.arg_vector_terminator = ((const char**) lims.env_vector_start) - 1;
+	if (!(!*lims.arg_vector_terminator)) __assert_fail("found argv terminator", __FILE__, __LINE__, __func__);
+	lims.arg_vector_start = lims.arg_vector_terminator;
 	unsigned nargs = 0;
 	/* To search for the start of the array, we look for an integer that is
 	 * a plausible argument count... which won't look like any pointer we're seeing. */
 	#define MAX_POSSIBLE_ARGS 4194304
-	while (*((uintptr_t*) lims.argv_vector_start - 1) > MAX_POSSIBLE_ARGS)
+	while (*((uintptr_t*) lims.arg_vector_start - 1) > MAX_POSSIBLE_ARGS)
 	{
-		--lims.argv_vector_start;
+		--lims.arg_vector_start;
 		++nargs;
 	}
-	if (!(*((uintptr_t*) lims.argv_vector_start - 1) == nargs)) __assert_fail("argv vector length match", __FILE__, __LINE__, __func__);
-	lims.p_argcount = (intptr_t*) lims.argv_vector_start - 1;
+	if (!(*((uintptr_t*) lims.arg_vector_start - 1) == nargs)) __assert_fail("argv vector length match", __FILE__, __LINE__, __func__);
+	lims.p_argcount = (intptr_t*) lims.arg_vector_start - 1; // libcrunch-unfriendly cast, just FYI
 
+#define expand_auxv_string_tags(tag) || p->a_type == tag
 	/* Now we have the arg vectors and env vectors, loop through them
-	 * to get the highest char pointer we see. */
-	for (const char **p = lims.argv_vector_start; p != lims.argv_vector_terminator; ++p)
+	 * to get the highest char pointer we see  */
+#define VISIT_ALL_STRINGS(action) do { \
+	for (const char **p = lims.arg_vector_start; p != lims.arg_vector_terminator; ++p) \
+	{ \
+		action(*p); \
+	} \
+	for (const char **p = lims.env_vector_start; p != lims.env_vector_terminator; ++p) \
+	{ \
+		action(*p); \
+	} \
+	for (ElfW(auxv_t) *p = aux_vector_start; p != lims.aux_vector_terminator; ++p) \
+	{ \
+		/* Check for AT_RANDOM, AT_PLATFORM and anything else that might */ \
+		/* be pointing at data in the vague asciiz area, so we can remember the */ \
+		/* highest address. */ \
+		if (0 auxv_string_tags(expand_auxv_string_tags)) \
+		{ \
+			action((char*) p->a_un.a_val); \
+		} \
+	} } while(0)
+#define SEEN_POSSIBLE_ASCIIZ_POINTER(p) do { \
+    if ((uintptr_t) (p) > (uintptr_t) (lims.env_vector_terminator + 1)) { \
+      if ((uintptr_t) (p) < (uintptr_t) lowest_asciiz_seen) { \
+        lowest_asciiz_seen = (char*) (p); \
+      } \
+      max_distinct_pages += (1 + \
+        (((uintptr_t) ROUND_UP_PTR_TO_PAGE(strlen((char*)(p)) + 1)) >> LOG_MIN_PAGE_SIZE) \
+      ); \
+    } \
+  } while (0)
+	VISIT_ALL_STRINGS(SEEN_POSSIBLE_ASCIIZ_POINTER);
+	/* Now we've done a pass over all strings. We have an upper bound on how many
+	 * distinct page numbers might be touched. But we need to do a pass again, unfortunately. */
+	assert(max_distinct_pages > 0);
+	unsigned long asciiz_pagenums[max_distinct_pages];
+	unsigned n_pagenums_used = 0;
+	bzero(asciiz_pagenums, max_distinct_pages * sizeof asciiz_pagenums[0]);
+	/* We don't need to deduplicate, because we allocated a large enough array
+	 * to deal with the case where all strings occupy distinct pagenums. */
+#define ENUMERATE_ASCIIZ_CANDIDATE_PAGES(p) do { \
+  unsigned long first_page_num = ((uintptr_t) (p)) >> LOG_MIN_PAGE_SIZE; \
+  unsigned long last_page_num = ((uintptr_t) (((char*)(p)) + 1 + strlen((char*)(p)))) >> LOG_MIN_PAGE_SIZE; \
+  do { \
+    assert(n_pagenums_used < max_distinct_pages); \
+    asciiz_pagenums[n_pagenums_used++] = first_page_num++; \
+  } while (first_page_num < last_page_num); \
+} while (0)
+	VISIT_ALL_STRINGS(ENUMERATE_ASCIIZ_CANDIDATE_PAGES);
+	/* Now we have a big array of page numbers, with many duplicates. Sort it. */
+	qsort(&asciiz_pagenums[0], n_pagenums_used, sizeof asciiz_pagenums[0], compare_unsigned_long);
+	fprintf(stderr, "enumerated %ld (likely highly duplicated) asciiz pages\n", (long) n_pagenums_used);
+	if (n_pagenums_used > 0)
 	{
-		if ((*p) > highest_asciiz_seen) highest_asciiz_seen = *p;
+		fprintf(stderr, "first and last: %p, %p\n",
+			(void*) asciiz_pagenums[0],
+			(void*) asciiz_pagenums[n_pagenums_used-1]
+		);
 	}
-	for (const char **p = lims.env_vector_start; p != lims.env_vector_terminator; ++p)
+	fflush(stderr);
+	/* Now we still have the duplicates, but we can just skip over them. */
+#define proj(n) (*(n))
+	unsigned long *found = bsearch_leq_generic(unsigned long, PAGENUM(lims.env_vector_terminator + 1),
+			&asciiz_pagenums[0],
+			n_pagenums_used,
+			proj);
+#undef proj
+	/* play forwards until the first >= */
+	if (found)
 	{
-		if ((*p) > highest_asciiz_seen) highest_asciiz_seen = *p;
+		while (*found < PAGENUM(lowest_asciiz_seen) && found != &asciiz_pagenums[n_pagenums_used])
+		{
+			fprintf(stderr, "skipping too-low pagenum %p\n", (void*) *found); fflush(stderr);
+			++found;
+		}
 	}
+	/* we can only bsearch for entries <= , so if everything is >, we must intervene */
+	if (!found && n_pagenums_used > 0 && asciiz_pagenums[0] >= PAGENUM(lims.env_vector_terminator + 1))
+	{
+		found = &asciiz_pagenums[0];
+		fprintf(stderr, "initial asciiz pagenum %p\n", (void*) *found); fflush(stderr);
+	}
+	if (!found || found == &asciiz_pagenums[n_pagenums_used])
+	{
+		/* This means we found no strings at all pointing to at/above the auxv terminator.
+		 * That's very strange, but could be e.g. if the program emptied its environment and
+		 * rewrote its argv, or simply detached its asciiz data and located it somewhere lower
+		 * in memory. */
+		fprintf(stderr, "auxv/vectors beginning at %p suspiciously free of pointers to nearby string data"
+			" (searched for pagenum <= 0x%lx across %d entries; lowest seen: %p vs %p\n", aux_vector_start,
+				PAGENUM(lims.env_vector_terminator + 1), n_pagenums_used, lowest_asciiz_seen,
+				(n_pagenums_used > 0) ? (void*) asciiz_pagenums[0] : (void*)-1);
+		fflush(stderr);
+		// assert(lowest_asciiz_seen == (const char*) -1);
+		/* We can't assert that we didn't see *anything* -- can we
 
-	/* Now for the asciiz. We lump it all in one chunk. */
-	lims.asciiz_start = (char*) (lims.auxv_array_terminator + 1);
-	/* On Linux there is normally a zero word at the end of asciiz, but
-	 * we can't rely on this e.g. because of valgrind's user-mode exec,
-	 * which does not add a zero word. */
-	lims.asciiz_end = highest_asciiz_seen + strlen(highest_asciiz_seen) + 1;
+(gdb) print lowest_asciiz_seen 
+$1 = 0x7fffffffcf69 "\2751K\224ixq\272\213\2259\352A\273\344Lx86_64"
+
+	-- this is the lowest of all string pointers seen that were > aux_vector_start
+
+(gdb) print (void*) asciiz_pagenums[0]
+$3 = (void *) 0x7fffffffc
+
+	-- this is the lowest pagenum of all string pointers that were > aux_vector_Start
+
+found
+
+	-- this is the highest pagenum *less than or equal to* PAGENUM(lims.aux_vector_terminator + 1)
+		-- but there might reasonably not be anything less! if all strings are above. 
+ */
+	}
+	else
+	{
+		unsigned long *found_lower = found;
+		/* Now look for a contiguous range of pages */
+		while (found + 1 != &asciiz_pagenums[n_pagenums_used]
+				&& *(found + 1) <= *found + 1)
+		{
+			fprintf(stderr, "searching beyond included pagenum %p\n", (void*) *found);
+			fflush(stderr);
+
+			++found;
+		}
+		unsigned long *found_upper = found;
+
+		/* Now do one last pass over the strings. */
+		char *asciiz_upper_bound = (char*)(
+				(((uintptr_t) *found_upper) << LOG_MIN_PAGE_SIZE)
+				+ MIN_PAGE_SIZE
+		);
+		char *highest_asciiz_end_seen = NULL;
+#define IDENTIFY_HIGHEST_ASCIIZ_BYTE(p) do { \
+    char *end = (char*)(p) + strlen((char*)(p)) + 1; \
+    if ((char*)(p) >= lowest_asciiz_seen && \
+        end > highest_asciiz_end_seen && \
+        end <= asciiz_upper_bound) \
+    { highest_asciiz_end_seen = end; } \
+} while (0)
+		VISIT_ALL_STRINGS(IDENTIFY_HIGHEST_ASCIIZ_BYTE);
+
+		/* Now for the asciiz. We lump it all in one chunk. */
+		lims.asciiz_start = lowest_asciiz_seen;
+		/* On Linux there is normally a zero word at the end of asciiz, but
+		 * we can't rely on this e.g. because of valgrind's user-mode exec,
+		 * which does not add a zero word. */
+		lims.asciiz_end = highest_asciiz_end_seen;
+	}
 
 	return lims;
 }
+#undef expand_auxv_string_tags
+
+struct auxv_copy_status
+{
+	enum auxv_component last_component_copied;
+	size_t nbytes_used;
+	ElfW(auxv_t) *maybe_auxv;
+};
+static inline
+struct auxv_copy_status copy_and_resize_auxv(
+	void *dest,
+	ElfW(auxv_t) *p_src_auxv,
+	struct auxv_limits *maybe_limits_cached,
+	unsigned n_aux_entries_incl_terminator,
+	ElfW(auxv_t) *in_additional_aux_entries,
+	unsigned n_env_entries_incl_terminator,
+	char **in_additional_env_entries,
+	unsigned n_arg_entries_incl_terminator,
+	char **in_additional_arg_entries,
+	unsigned total_bytes_at_dest,
+	char *in_additional_asciiz_data,
+	size_t in_additional_asciiz_data_nbytes
+)
+{
+	char *dest_start = dest;
+	char *dest_end = dest_start + total_bytes_at_dest;
+	char *pos = dest;
+	struct auxv_limits tmp_limits;
+	struct auxv_limits *limits;
+	if (maybe_limits_cached) limits = maybe_limits_cached;
+	else { tmp_limits = get_auxv_limits(p_src_auxv); limits = &tmp_limits; }
+
+/* TODO: give these macros protected name like BYTES_REMAINING_, so that neither
+ * they nor our later undef clobbers any user macros. */
+#define BYTES_REMAINING (dest_end - pos)
+#define BYTES_USED (pos - dest_start)
+
+	ElfW(auxv_t) *out_auxv = NULL;
+#define CHECK_DEST_LIMIT(needed_end_outpos, elt) do { \
+    if ((needed_end_outpos) - pos > BYTES_REMAINING) { \
+      fprintf(stderr, "ran out of bytes at " # elt " (needed %ld, remaining %ld)\n", (long) ((needed_end_outpos) - pos), (long)(BYTES_REMAINING) ); fflush(stderr); \
+      return (struct auxv_copy_status) { \
+        .nbytes_used = pos - dest_start, \
+        .last_component_copied = ((elt)-1), \
+        .maybe_auxv = out_auxv \
+       }; \
+    } \
+  } while (0)
+
+#define MEMCPY_AND_INCREMENT(src, nbytes, elt) \
+  do { \
+    CHECK_DEST_LIMIT(pos + (nbytes), elt); \
+    memcpy( pos, (src), (nbytes) ); \
+    pos += (nbytes); \
+  } while (0)
+
+/* We should never have to align up the position. It makes it
+ * harder for clients to calculate the size they need. Since
+ * we put the asciiz (lower-alignment) stuff at the end,
+ * and auxv entries have only word alignment (ASSUMPTION),
+ * there's no need to insert padding. */
+#if 0
+#define ALIGN_UP_TO(n, elt) do { \
+    char *endpos = ROUND_UP_PTR(pos, (n)); \
+    CHECK_DEST_LIMIT(endpos, (elt)); \
+    pos = endpos; \
+  } while (0)
+#else
+#define ALIGN_UP_TO(n, elt) do { \
+    assert((uintptr_t) pos % (n) == 0); \
+} while (0)
+#endif
+
+	/* Copy the argcount. */
+	MEMCPY_AND_INCREMENT(limits->p_argcount, sizeof *limits->p_argcount, AUXV_ARGCOUNT);
+#define COPY_VEC(T, frag, FRAG) /* HACK: to leave dest_frag_vector_start decl in calling scope, delay */ \
+                                /* the do {} while (0)... don't use after do/while/if without { } ! */ \
+	ALIGN_UP_TO(_Alignof (T), AUXV_ ## FRAG ## _VECTOR); \
+	T* dest_ ## frag ## _vector_start = (T*) pos; \
+	do { \
+	/* Copy up to the size the caller wanted. */ \
+	/* XXX: should we size using the without-terminator size? */ \
+	/* HACK: use MINPTR, defined on uintptr_t; we have no MIN() here */ \
+	size_t n_copied_from_src =  MINPTR( \
+			n_ ## frag ## _entries_incl_terminator, \
+			1u + (limits-> frag ## _vector_terminator - limits-> frag ## _vector_start) \
+		); \
+	MEMCPY_AND_INCREMENT(limits-> frag ## _vector_start, \
+		sizeof (T) * n_copied_from_src, \
+		AUXV_ ## FRAG ## _VECTOR \
+	); \
+	/* How many have we copied? */ \
+	if (n_copied_from_src < n_ ## frag ##_entries_incl_terminator) \
+	{ \
+		/* The caller asks to fill in some more. We may or may not */ \
+		/* have copied a terminator already... have we? */ \
+		size_t n_more_to_copy; \
+		uintptr_t testword; \
+		if (n_copied_from_src > 0 && \
+		  (memcpy(&testword, &dest_ ## frag ## _vector_start[n_copied_from_src - 1], sizeof testword), !testword)) /* <-- strict-aliasing-safe HACK for char* or auxv_t* */ \
+		{ \
+			/* We copied a terminator earlier. Need to overwrite it. */ \
+			pos -= sizeof (T); \
+			n_more_to_copy = /* target n */ n_ ## frag ##_entries_incl_terminator - \
+			   /* one of the ones we copied earlier is not useful */ (n_copied_from_src - 1) - \
+			   1 /* need a terminator; no point creating this by copy */; \
+		} \
+		else \
+		{ \
+		    /* We didn't copy a terminator earlier.  */ \
+			n_more_to_copy = /* target n */ n_ ## frag ##_entries_incl_terminator - \
+			   n_copied_from_src - 1 /* need a terminator; no point creating this by copy */; \
+		} \
+		MEMCPY_AND_INCREMENT(in_additional_ ## frag ## _entries, \
+		    sizeof (T) * n_more_to_copy, AUXV_ ## FRAG ## _VECTOR); \
+		/* Increment pos to make space for the terminator that we didn't create by copy. */ \
+		pos += sizeof (T); \
+	} \
+	/* ensure termination */ \
+	bzero(&dest_ ## frag ## _vector_start[n_ ## frag ##_entries_incl_terminator - 1], sizeof (T)); \
+} while (0)
+	COPY_VEC(char*, arg, ARG);
+	COPY_VEC(char*, env, ENV);
+	COPY_VEC(ElfW(auxv_t), aux, AUX);
+	out_auxv = dest_aux_vector_start;
+
+	/* asciiz. Conceptually we view the asciiz data as logically detached
+	 * from the auxv, i.e. does not have to follow in memory. If we run
+	 * out of room, we can simply omit to copy it. The caller in effect
+	 * requests this by specifying a buffer size s.t. it will lack room
+	 * fo *any* asciz. The size needed for such a partially copied auxv
+	 * is naturally calculated from the return value of get_auxv_limits.
+	 * But yes, the caller has to calculate the size s.t. asciz won't be
+	 * copied, but everything before will. */
+
+	/* Here is a real example of how Linux fills the asciz/auxv boundary
+	 * area, from high to low...
+
+0x7fffffffcf50: 0x74732f6c61636f6c      0x6f772f6e65687065
+0x7fffffffcf40: 0x0     0x2f7261762f000000                       <-- another alignment boundary... 0x7fffffffcf4b is the executable filename, then next pos rounded down to 0x7fffffffcf40. This is the initial arch_align_stack position.
+0x7fffffffcf30: 0x573c83132de8016       0x34365f36387835         <-- ... AT_RANDOM continuing, then "x86_64" (7 bytes at 0x7fffffffcf39)
+0x7fffffffcf20: 0x0     0x5d24c5d7d1c75500                       <-- 9 zero (padding) bytes, then AT_RANDOM
+0x7fffffffcf10: 0x0     0x0                                      <-- auxv terminator
+0x7fffffffcf00: 0xf     0x7fffffffcf39                           <-- auxv entry (AT_PLATFORM)
+0x7fffffffcef0: 0x1f    0x7fffffffefa7                           <-- auxv entry (AT_EXECFN)
+0x7fffffffcee0: 0x1a    0x2                                      <-- auxv entry (AT_HWCAP2)
+0x7fffffffced0: 0x19    0x7fffffffcf29                           <-- auxv entry (AT_RANDOM)
+0x7fffffffcec0: 0x17    0x0
+0x7fffffffceb0: 0xe     0x3e8
+0x7fffffffcea0: 0xd     0x3e8
+0x7fffffffce90: 0xc     0x3e8
+0x7fffffffce80: 0xb     0x3e8
+0x7fffffffce70: 0x9     0x5555555550e0 <_start>
+0x7fffffffce60: 0x8     0x0
+0x7fffffffce50: 0x7     0x7ffff7fcb000                           <-- auxv entry (AT_BASE)
+0x7fffffffce40: 0x5     0xd
+0x7fffffffce30: 0x4     0x38
+0x7fffffffce20: 0x3     0x555555554040                           <-- auxv entry (AT_PHDR)
+0x7fffffffce10: 0x11    0x64
+0x7fffffffce00: 0x6     0x1000
+0x7fffffffcdf0: 0x10    0xbfebfbff
+0x7fffffffcde0: 0x33    0x6f0
+0x7fffffffcdd0: 0x21    0x7ffff7fc9000                           <-- auxv entry (AT_SYSINFO_EHDR)
+	 
+	 Yes, AT_RANDOM really does point to 0x7fffffffcf39
+	 How does this come to be? see fs/binfmt_elf.c.
+
+	 These STACK_ALLOC macros are growing the stack downwards.
+	 The 9 thing is simply a reflection of how many bytes are in the strings.
+	 We get an unaligned AT_RANDOM because it has no alignment requirement so is just
+	 blatted out after these strings.
+	 
+	 Note that initially, the asciiz strings are on the stack but
+	 the aux vector is not -- nor are the arg vector or env vector, not argc.
+	 So we add the AT_RANDOM data quite early.
+	 We did, however, do arch_align_stack... did this do anything? Yes. 
+	         if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
+                sp -= prandom_u32_max(8192);
+        return sp & ~0xf;
+	
+	Note that on some MIPS ABIs, the mask is ~7 not ~15
+
+static int
+create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
+		unsigned long interp_load_addr,
+		unsigned long e_entry, unsigned long phdr_addr)
+{
+	unsigned long p = bprm->p;
+...
+	p = arch_align_stack(p);                                // see above!
+...
+	u_platform = NULL;
+	if (k_platform) {
+		size_t len = strlen(k_platform) + 1;
+
+		u_platform = (elf_addr_t __user *)STACK_ALLOC(p, len);
+		if (copy_to_user(u_platform, k_platform, len))
+			return -EFAULT;
+	}
+...
+	memset(elf_info, 0, (char *)mm->saved_auxv +
+			sizeof(mm->saved_auxv) - (char *)elf_info);
+...
+	// And advance past the AT_NULL entry.
+	elf_info += 2;
+...
+	ei_index = elf_info - (elf_addr_t *)mm->saved_auxv;
+	sp = STACK_ADD(p, ei_index);
+...
+	items = (argc + 1) + (envc + 1) + 1;
+	bprm->p = STACK_ROUND(sp, items);
+
+ These STACK_ADD and STACK_ROUND are sized in elf_addr_t units, i.e. words.
+
+	items = (argc + 1) + (envc + 1) + 1;
+	bprm->p = STACK_ROUND(sp, items);
+...
+	sp = (elf_addr_t __user *)bprm->p;
+*/
+	char *copied_out_old_asciiz_start = pos;
+	enum auxv_component last_copied = AUXV_AUX_VECTOR;
+	size_t nbytes_old_asciiz_to_copy = MINPTR(limits->asciiz_end - limits->asciiz_start,
+		BYTES_REMAINING);
+	if (nbytes_old_asciiz_to_copy != 0)
+	{
+		MEMCPY_AND_INCREMENT(limits->asciiz_start,
+			nbytes_old_asciiz_to_copy,
+			AUXV_AUX_VECTOR);
+		*(pos-1) = '\0';
+	}
+	/* "one past the null terminator" is the last valid offset... our bounds check includes the NUL */
+	unsigned long max_offset_into_copied_old_asciiz = pos - copied_out_old_asciiz_start;
+	// caller-suppied *extra* asciiz
+	char *out_additional_asciiz_start = pos;
+	if (in_additional_asciiz_data && in_additional_asciiz_data_nbytes > 0)
+	{
+		fprintf(stderr, "copying additional asciiz (beginning: \"%s\") to memory starting at %p\n",
+			in_additional_asciiz_data, out_additional_asciiz_start);
+		MEMCPY_AND_INCREMENT(in_additional_asciiz_data, in_additional_asciiz_data_nbytes,
+			AUXV_AUX_VECTOR);
+		*(pos-1) = '\0';
+	}
+	unsigned long max_offset_into_out_additional_asciiz = pos - out_additional_asciiz_start;
+	/* Only declare us as having copied AUXV_ASCIIZ if we copied all the original
+	 * and as many bytes as requested of the additional. */
+	if ((pos - copied_out_old_asciiz_start) == (limits->asciiz_end - limits->asciiz_start)
+			+ (in_additional_asciiz_data ? (ssize_t) in_additional_asciiz_data_nbytes : 0))
+	{
+		last_copied = AUXV_ASCIIZ;
+	}
+
+	/* We need to rewrite the argv/env/auxv entries if they point into the asciiz! */
+#define REWRITE_VECTOR(T, start, proj, null_proj, filter) \
+	for (T *p_ent = (start); !!null_proj(p_ent); ++p_ent) \
+	{ \
+		if (!(filter(p_ent))) continue; \
+		char *ptr = (char*) proj(p_ent); \
+		fprintf(stderr, "(0) considering adjusting a vector value %p (\"%s\")" \
+		   " in az %p-%p +n az %p-%p\n", ptr, ptr, \
+			limits->asciiz_start, limits->asciiz_end, \
+			in_additional_asciiz_data ?: NULL, \
+			in_additional_asciiz_data ? ((char*) in_additional_asciiz_data + in_additional_asciiz_data_nbytes) : NULL); \
+		fflush(stderr); \
+		if (ptr >= limits->asciiz_start && ptr < limits->asciiz_end) \
+		{ \
+			unsigned long offset = ptr - limits->asciiz_start; \
+			size_t len = strnlen(ptr, limits->asciiz_end - ptr); \
+			fprintf(stderr, "(1) start falls withing asciiz; end? len %ld, in offset 0x%lx, max out offset 0x%lx\n", (long) len, (long) offset, (long) max_offset_into_copied_old_asciiz); fflush(stderr); \
+			if (offset + len + 1 <= max_offset_into_copied_old_asciiz) { \
+				fprintf(stderr, "(2) end also\n"); fflush(stderr); \
+			    char *old_p = proj(p_ent); \
+				proj(p_ent) = copied_out_old_asciiz_start + offset; \
+				fprintf(stderr, "(3) adjusted a vector value (\"%s\") in asciiz:" \
+				   " offset 0x%lx is now at %p\n", old_p, offset, proj(p_ent)); \
+				fflush(stderr); \
+			} \
+		} \
+		else if (in_additional_asciiz_data && ptr >= in_additional_asciiz_data && \
+		  ptr < in_additional_asciiz_data + in_additional_asciiz_data_nbytes) \
+		{ \
+			unsigned long offset_within_in_additional_asciiz = ptr - in_additional_asciiz_data; \
+			/* length of the string in the input data */ \
+			size_t len = strnlen(ptr, in_additional_asciiz_data_nbytes - \
+			    offset_within_in_additional_asciiz); \
+			fprintf(stderr, "(4) start falls withing additional; end? len %ld, in offset 0x%lx, max out offset 0x%lx\n", (long) len, offset_within_in_additional_asciiz, max_offset_into_out_additional_asciiz); fflush(stderr); \
+			if (offset_within_in_additional_asciiz + len + 1 <= max_offset_into_out_additional_asciiz) { \
+			   fprintf(stderr, "(5) end also\n"); fflush(stderr); \
+			   char *old_p = proj(p_ent); \
+			   proj(p_ent) = out_additional_asciiz_start + offset_within_in_additional_asciiz; \
+				fprintf(stderr, "(6) adjusted a vector value (\"%s\") in additional asciiz:" \
+				   " offset 0x%lx is now at %p + %lx = %p (was %p)\n", old_p, \
+					(long) offset_within_in_additional_asciiz, out_additional_asciiz_start, \
+					offset_within_in_additional_asciiz, (void*)(proj(p_ent)), old_p); \
+				fflush(stderr); \
+			} else { \
+			  fprintf(stderr, "fishy: no room adjust a vector value (\"%s\") in additional asciiz:" \
+			   " offset 0x%lx is at %p + %lx = %p\n", (char*) (proj(p_ent)), \
+				(long) offset_within_in_additional_asciiz, out_additional_asciiz_start, \
+				offset_within_in_additional_asciiz, (void*)(proj(p_ent))); \
+ \
+			}\
+		} \
+	}
+#define proj(p_ent) (*(p_ent))
+#define filter(p_ent) 1
+	REWRITE_VECTOR(char*, dest_arg_vector_start, proj, proj, filter);
+	REWRITE_VECTOR(char*, dest_env_vector_start, proj, proj, filter);
+#undef proj
+#undef filter
+#define proj(p_ent) (p_ent)->a_un.a_val
+#define null_proj(p_ent) (p_ent)->a_type
+#define expand_auxv_string_tags(tag) || p_ent->a_type == tag
+#define filter(p_ent) (0 auxv_string_tags(expand_auxv_string_tags))
+	/* filter for the string-bearing auxv entries */
+	REWRITE_VECTOR(ElfW(auxv_t), dest_aux_vector_start, proj, null_proj, filter);
+#undef expand_auxv_string_tags
+#undef filter
+#undef proj
+#if 0
+	for (ElfW(auxv_t) *p_ent = dest_aux_vector_start; p_ent->a_type != AT_NULL; ++p_ent)
+	{
+		ElfW(auxv_t) ent = *p_ent;
+		if ((char*) ent.a_un.a_val >= limits->asciiz_start && 
+				(char*) ent.a_un.a_val < limits->asciiz_end)
+		{
+			/* Only do the rewrite for tags that are known to point to strings?
+			 * but WARN if we see one that looks like a string ptr  */
+#define expand_auxv_string_tags(tag) || ent.a_type == tag
+			if (0 auxv_string_tags(expand_auxv_string_tags))
+#undef expand_auxv_string_tags
+			{
+				unsigned long offset = (char*) ent.a_un.a_val - limits->asciiz_start;
+				size_t len = strnlen((char*) ent.a_un.a_val,
+					limits->asciiz_end - (char*) ent.a_un.a_val);
+				/* We detect the case where the characters lie outside the range that
+				 * has been copied. Use +1 so that we don't write new unterminated
+				 * strings, even though via strnlen we guard against reading these. */
+				if (offset + len + 1 <= max_offset_into_copied_old_asciiz)
+				{
+					p_ent->a_un.a_val = (uintptr_t) (copied_out_old_asciiz_start + offset);
+				}
+			}
+			else
+			{
+				fprintf(stderr, "suspiciously string-pointer-like value in auxv entry with type 0x%lx\n",
+					(long) ent.a_type);
+				fflush(stderr);
+			}
+		}
+	} /* end for auxv entry to rewrite */
+#endif
+	/* If we skipped copying the asciiz, the pointers in the vectors should be
+	 * unmolested. */
+	/* TODO: using this to move the stack *except* the asciiz may break librunt's method
+	 * for discovering the auxv in the first place. I think the right method would
+	 * - read /proc/self/stat to get the arg/env area pointers
+	 * - if moving any of the stack, use prctl(PR_SET_MM) to update the relevant kernel pointers.
+	 */
+	return (struct auxv_copy_status) {
+		.nbytes_used = pos - dest_start,
+		.last_component_copied = last_copied,
+		.maybe_auxv = out_auxv
+	};
+}
+#undef BYTES_REMAINING
+#undef CHECK_DEST_LIMIT
+#undef MEMCPY_AND_INCREMENT
+#undef ALIGN_UP_TO
+#undef COPY_VEC
 
 /* These are nasty. We include our own strcmp and strchr so that we can search environment
  * strings without being dependent on dynamically linked libc functions. Similarly we have
@@ -402,19 +965,19 @@ struct auxv_limits get_auxv_limits(ElfW(auxv_t) *auxv_array_start)
  * (pageindex.c). I thought about moving them to liballocs but have decided to leave these
  * here for now... since we deal with auxv, we deal with environment strings and we are
  * intending to cater to "sensitive contexts" where libc functions aren't available. */
-static inline int relf_strcmp_(const char *str1, const char *str2)
+static inline int relf_strncmp_(const char *str1, const char *str2, size_t n)
 {
-	signed diff;
-	while (1)
+	const char *orig_str1 = str1;
+	while (str1 - orig_str1 < (ptrdiff_t) n)
 	{
-		diff = *str1 - *str2;
-		if (!*str1 || !*str2 || 0 != diff) break;
+		signed diff = *str1 - *str2;
+		if (0 != diff) return diff; /* found a non-equal character; diff has correct sign */
+		if (!*str1) /* they're equal! *str2 is also NUL */ break;
 		++str1;
 		++str2;
 	}
-	if (!*str1 && *str2) return -1;
-	if (!*str2 && *str1) return 1;
-	return diff;
+	/* If we got here, we've compared n characters without seeing a diff */
+	return 0;
 }
 static inline char *relf_strchr_(const char *s, int c)
 {
@@ -422,19 +985,27 @@ static inline char *relf_strchr_(const char *s, int c)
 	if (*s == c) return (char*) s;
 	return NULL;
 }
-static inline char *environ_getenv(const char *name, char **environ)
+static inline char **environ_get_env_vector_ptr(const char *name, char **environ, const char **maybe_out_equals_pos)
 {
 	const char *var;
 	while (NULL != (var = *(environ++)))
 	{
 		const char *equals_pos = relf_strchr_(var, '=');
 		if (!equals_pos || equals_pos == var) continue; // weird string
-		if (0 == relf_strcmp_(name, equals_pos - 1))
+		if (0 == relf_strncmp_(name, var, equals_pos - var))
 		{
 			// hit!
-			return (char*)(equals_pos + 1);
+			if (maybe_out_equals_pos) *maybe_out_equals_pos = equals_pos;
+			return environ - 1;
 		}
 	}
+	return NULL;
+}
+static inline char *environ_getenv(const char *name, char **environ)
+{
+	const char *equals_pos = NULL;
+	char **found = environ_get_env_vector_ptr(name, environ, &equals_pos);
+	if (found) return (char*)(equals_pos + 1);
 	return NULL;
 }
 

@@ -38,7 +38,7 @@ char *get_exe_command_fullname(void)
 				 * want, is in the argv. Luckily, the ld.so has fixed
 				 * up the argument vector for us. We need to realpath
 				 * it, though. */
-				strncpy(exe_fullname, realpath_quick(limits.argv_vector_start[0]),
+				strncpy(exe_fullname, realpath_quick(limits.arg_vector_start[0]),
 					sizeof exe_fullname);
 				exe_fullname[sizeof exe_fullname - 1] = '\0';
 				goto out;
@@ -53,6 +53,7 @@ char *get_exe_command_fullname(void)
 		}
 		// OK, fall back on /proc
 		// FIXME: this is sysdep!
+		// It also can only get the dynobj but not the command.
 		int ret __attribute__((unused))
 		 = readlink("/proc/self/exe", exe_fullname, sizeof exe_fullname);
 		errno = 0;

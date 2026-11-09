@@ -104,10 +104,6 @@ ElfW(Sym) *__runt_files_get_symtab_by_idx(struct file_metadata *meta, ElfW(Half)
 	return NULL;
 }
 
-
-struct file_metadata *__runt_files_notify_load(void *handle, const void *load_site);
-void __runt_files_notify_unload(const char *copied_filename);
-
 const void *
 __runt_find_section_boundary(
 	unsigned char *search_addr,
