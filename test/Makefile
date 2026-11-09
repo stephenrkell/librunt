@@ -88,17 +88,19 @@ checkrun-%:
 
 INCLUDE_MK_INC = `if test -e $(dir $(realpath $(THIS_MAKEFILE)))/$*/mk.inc; then /bin/echo -f mk.inc; else true; fi`
 
+GDB ?= gdb
+
 _onlyrun-nopreload-%:
 	./nopreload-$*
 
 _onlygdbrun-nopreload-%:
-	gdb --args ./nopreload-$* ./nopreload-$*
+	$(GDB) --args ./nopreload-$* ./nopreload-$*
 
 _onlyrun-%:
 	LD_PRELOAD=$(PRELOAD) ./$*
 
 _onlygdbrun-%:
-	gdb --eval-command "set environment LD_PRELOAD=$(PRELOAD)" --args ./$* ./$*
+	$(GDB) --eval-command "set environment LD_PRELOAD=$(PRELOAD)" --args ./$* ./$*
 
 build-%:
 	$(MAKE) -C "$*" $(INCLUDE_MK_INC) "$*" 
