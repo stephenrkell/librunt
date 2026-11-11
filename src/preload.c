@@ -238,10 +238,11 @@ char *dlerror(void)
 	_Bool we_set_flag = 0;
 	if (!__avoid_libdl_calls) { we_set_flag = 1; __avoid_libdl_calls = 1; }
 
-	// we only call the original if our error is NULL *and*
-	// we think it's safe to call down
+	/* We only call the original if our error is NULL *and*
+	 * we think it's safe to call down. FIXME: this is wrong at least sometimes.
+	 * See comment above in dlopen(). */
 	char *ret;
-	if (our_dlerror || __avoid_libdl_calls) ret = our_dlerror;
+	if (our_dlerror || (__avoid_libdl_calls && !we_set_flag)) ret = our_dlerror;
 	else /* no error is set here, and it seems safe to call down */ ret = call_orig_dlerror();
 
 	/* clear whatever error we had stored */
