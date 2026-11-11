@@ -54,9 +54,6 @@ int dl_for_one_object_phdrs(void *handle,
 	return dl_iterate_phdr(dl_for_one_phdr_cb, &args);
 }
 
-#ifndef MAX_EARLY_LIBS
-#define MAX_EARLY_LIBS 16
-#endif
 struct link_map *early_lib_handles[MAX_EARLY_LIBS] __attribute__((visibility("hidden")));
 void init_early_libs(void) __attribute__((visibility("hidden")));
 void init_early_libs(void)

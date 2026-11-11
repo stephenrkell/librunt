@@ -24,6 +24,8 @@ char *get_exe_command_basename(void) __attribute__((visibility("hidden")));
 char *realpath_quick(const char *arg) __attribute__((visibility("hidden")));
 
 void init_early_libs(void) __attribute__((visibility("hidden")));
+#define MAX_EARLY_LIBS 512
+extern struct link_map *early_lib_handles[MAX_EARLY_LIBS] __attribute((visibility("hidden")));
 
 extern int __librunt_debug_level;
 extern FILE *stream_err;
@@ -36,9 +38,6 @@ extern FILE *stream_err;
 void *__private_malloc(size_t sz);
 void __private_free(void *ptr);
 char *__private_strdup(const char *s);
-
-#define MAX_EARLY_LIBS 128
-extern struct link_map *early_lib_handles[MAX_EARLY_LIBS] __attribute((visibility("hidden")));
 
 /* Convenience for code that does raw mmap. */
 #ifndef MMAP_RETURN_IS_ERROR
