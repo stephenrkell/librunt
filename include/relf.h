@@ -551,7 +551,6 @@ found
 	}
 	else
 	{
-		unsigned long *found_lower = found;
 		/* Now look for a contiguous range of pages */
 		while (found + 1 != &asciiz_pagenums[n_pagenums_used]
 				&& *(found + 1) <= *found + 1)
@@ -858,7 +857,7 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 			fprintf(stderr, "(1) start falls withing asciiz; end? len %ld, in offset 0x%lx, max out offset 0x%lx\n", (long) len, (long) offset, (long) max_offset_into_copied_old_asciiz); fflush(stderr); \
 			if (offset + len + 1 <= max_offset_into_copied_old_asciiz) { \
 				fprintf(stderr, "(2) end also\n"); fflush(stderr); \
-			    char *old_p = proj(p_ent); \
+				char *old_p = (char*) proj(p_ent); \
 				proj(p_ent) = copied_out_old_asciiz_start + offset; \
 				fprintf(stderr, "(3) adjusted a vector value (\"%s\") in asciiz:" \
 				   " offset 0x%lx is now at %p\n", old_p, offset, proj(p_ent)); \
@@ -875,7 +874,7 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 			fprintf(stderr, "(4) start falls withing additional; end? len %ld, in offset 0x%lx, max out offset 0x%lx\n", (long) len, offset_within_in_additional_asciiz, max_offset_into_out_additional_asciiz); fflush(stderr); \
 			if (offset_within_in_additional_asciiz + len + 1 <= max_offset_into_out_additional_asciiz) { \
 			   fprintf(stderr, "(5) end also\n"); fflush(stderr); \
-			   char *old_p = proj(p_ent); \
+			   char *old_p = (char*) proj(p_ent); \
 			   proj(p_ent) = out_additional_asciiz_start + offset_within_in_additional_asciiz; \
 				fprintf(stderr, "(6) adjusted a vector value (\"%s\") in additional asciiz:" \
 				   " offset 0x%lx is now at %p + %lx = %p (was %p)\n", old_p, \
@@ -891,13 +890,14 @@ create_elf_tables(struct linux_binprm *bprm, const struct elfhdr *exec,
 			}\
 		} \
 	}
+/* Convention: proj returns an lvalue of pointer type. */
 #define proj(p_ent) (*(p_ent))
 #define filter(p_ent) 1
 	REWRITE_VECTOR(char*, dest_arg_vector_start, proj, proj, filter);
 	REWRITE_VECTOR(char*, dest_env_vector_start, proj, proj, filter);
 #undef proj
 #undef filter
-#define proj(p_ent) (p_ent)->a_un.a_val
+#define proj(p_ent) (*(void**)&(p_ent)->a_un.a_val)
 #define null_proj(p_ent) (p_ent)->a_type
 #define expand_auxv_string_tags(tag) || p_ent->a_type == tag
 #define filter(p_ent) (0 auxv_string_tags(expand_auxv_string_tags))
@@ -1018,6 +1018,10 @@ static inline char **get_auxv_environ(ElfW(auxv_t) *auxv)
 static inline
 ElfW(Dyn) *find_dynamic(char **environ, void *stackptr)
 {
+/* Suppress wrong GCC warnings about _DYNAMIC never being null. (It warns even if
+ * _DYNAMIC is declared with weak linkage.) */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress"
 	if (&_DYNAMIC[0]) return &_DYNAMIC[0];
 	else
 	{
@@ -1030,6 +1034,7 @@ ElfW(Dyn) *find_dynamic(char **environ, void *stackptr)
 		}
 	}
 	return NULL; /* shuts up frontc */
+#pragma GCC diagnostic pop
 }
 
 static inline
@@ -1100,8 +1105,12 @@ struct R_DEBUG_STRUCT_TAG *find_r_debug(void)
 // 		__assert_fail("found r_debug", __FILE__, __LINE__, __func__);
 // 	}
 	if (&_r_debug) return &_r_debug;
+/* Suppress wrong GCC warnings about _DYNAMIC never being null. */
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Waddress"
 	/* We've tried linking against an _r_debug and it didn't work. This presumably means that we are the dynamic linker, or are somehow involved in bootstrapping its operation (e.g. we are a chain loader). Here we are assuming that local reference works, i.e. we are getting our own _DYNAMIC. */
 	ElfW(Dyn) *found = &_DYNAMIC ? dynamic_lookup(_DYNAMIC, DT_DEBUG) : NULL;
+#pragma GCC diagnostic pop
 	if (found)
 	{
 		/* HACK: we need our own load address if we're to do RELF_MAYBE_ADJUST.
