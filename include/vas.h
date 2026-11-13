@@ -8,6 +8,10 @@
 #define MAXIMUM_USER_ADDRESS ((uintptr_t)-1)
 #endif
 
+#define MMAP_MIN 0x10000 /* FIXME: sysdep, and doesn't agree with MINIMUM_USER_ADDRESS. We use
+                          * MMAP_MIN only from libsystrap at present, for placing the lcall 
+                          * flipper area. */
+
 #ifndef WORD_BITSIZE
 #define WORD_BITSIZE ((sizeof (void*))<<3)
 #endif
