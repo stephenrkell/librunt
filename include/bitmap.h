@@ -313,4 +313,104 @@ static inline unsigned long bitmap_count_set_l(bitmap_word_t *p_bitmap, bitmap_w
 	return count;
 }
 
+static inline unsigned long nlz_l(bitmap_word_t w)
+{
+	return ntz(w);
+}
+
+static inline unsigned long ntz_l(bitmap_word_t w)
+{
+	return nlz(w);
+}
+
+static inline unsigned long bitmap_find_n_zero_l(bitmap_word_t *start_word, bitmap_word_t *bitmap_limit,
+	unsigned long nbits)
+{
+	/* Assuming 64-bit words for the sake of an example....
+	 * The most bits we can have with 0 fully zero words is 126.          The fewest is 0.
+	 * The most bits we can have with 1 fully zero word  is 64 + 63 + 63. The fewest is 64.
+	 * So what if I want 125 bits? I also need 0 fully zero words.
+	 * So what if I want 129 bits? I also need 1 fully zero word.
+	 *
+	 * For this many bits  I need at least this many all-zero words     and at most this many.
+	 * 0                   0                                            0
+	 * 1 ..63              0                                            0
+	 * 64..126             0                                            1
+	 * 127                 1                                            1
+	 * 128..190            1                                            2
+	 * 191                 2                                            2
+	 * 192..254            2                                            3
+	 * 255                 3                                            3
+	 * 256..               3                                            4
+	 * ...
+	 * The rightmost column is simply N / BITS_PER_WORD   - 1.
+	 * The middle is N+65 / BITS_PER_WORD   - 2 ?
+	 * In general... the minimum fully zero words is MAX(0, (nbits+ (WORD_NBITS+1) / WORD_NBITS) - 2)?
+	 */
+#ifndef MAX
+#define MAX(a, b)  ((a) < (b) ? (b) : (a))
+#endif
+	int n_zero_words_minimum = MAX(
+		( (int) nbits + ((int) BITMAP_WORD_NBITS + 1) ) / (int) BITMAP_WORD_NBITS   - 2,
+		0);
+	/* It is incomplete, but faster, to look for whole zero words.
+	 * But HMM, this generalises: look for >=0 whole words with
+	 * the necessary trailing bits *and* following bits or zero following word.
+	 * So we can write one big loop. The first thing we do is look for
+	 * a sequence of zero words, long enough to meet the minimum requirement,
+	 * but where that length might be zero.
+	 */
+	bitmap_word_t *search_word = start_word;
+	unsigned ntrailing = 0;
+	while (search_word < bitmap_limit)
+	{
+		bitmap_word_t *zero_search_word = search_word;
+		while (zero_search_word - search_word < n_zero_words_minimum
+				&& zero_search_word < bitmap_limit
+				&& !*zero_search_word) ++zero_search_word;
+		if (zero_search_word - search_word == n_zero_words_minimum)
+		{
+			/* All cases that might possibly work satisfy the above condition.
+			 *
+			 * If we got here, then word at >= search_word and < zero_search_word form a continuous
+			 * run of zero words. Do we have enough zero bits, using our trailing bits from the
+			 * word before search_word? */
+			if (ntrailing + BITMAP_WORD_NBITS * (zero_search_word - search_word)  >= nbits)
+			{
+				// success!
+				return (search_word - start_word) * BITMAP_WORD_NBITS - ntrailing;
+			}
+			else if (zero_search_word == bitmap_limit) return (unsigned long) -1;
+			else if (ntrailing + BITMAP_WORD_NBITS * (zero_search_word - search_word)
+					+ nlz_l(*zero_search_word) >= nbits)
+			{
+				// success! using leading bits in the next word
+				return (search_word - start_word) * BITMAP_WORD_NBITS - ntrailing;
+			}
+			else if (BITMAP_WORD_NBITS - popcount_word(*zero_search_word) >= nbits)
+			{
+				/* It *might* contain an internal string of zeroes... how to test efficiently? */
+				assert(nbits < BITMAP_WORD_NBITS);
+				for (unsigned i = 0; i < BITMAP_WORD_NBITS - nbits; ++i)
+				{
+					/* If we drop the leading i bits, do we have nlz >= nbits?
+					 * Remember we are little-endian, so dropping the leading is least-sig... */
+					if (nlz_l( (*zero_search_word) >> i )  >= nbits)
+					{
+						// ... success!
+						return (zero_search_word - start_word) * BITMAP_WORD_NBITS + i;
+					}
+				}
+			}
+		}
+		/* We fell down here because of the bitmap limit or because of a non-zero word.
+		 * Either way, start searching again from the next word, but remembering the trailing
+		 * zeroes. */
+		search_word = zero_search_word + 1;
+		ntrailing = ntz_l(*zero_search_word);
+	}
+	return (unsigned long) -1;
+}
+/* Some simple inline test cases for this */
+
 #endif
